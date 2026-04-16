@@ -1,0 +1,86 @@
+From: Lukas Klizas <lukas@klizas.lt>
+Date: Thu, 5 Feb 2026 17:00:00 +0200
+Subject: [PATCH] brcmfmac: fix suspend failures caused by unresponsive firmware
+
+During suspend, two firmware-dependent paths can stall or fail:
+
+1. brcmf_pcie_pm_enter_D3() sends a D3_INFORM mailbox message to firmware
+   and waits 2 seconds for an ACK. If firmware is hung, the timeout returns
+   -EIO and aborts the entire system suspend. Fix by proceeding with suspend
+   anyway -- on resume, the device is detected as unresponsive (intmask == 0)
+   and the existing recovery path does a full remove + re-probe.
+
+2. brcmf_msgbuf_delete_flowring() waits for outstanding_tx to drain before
+   checking if the bus is down. During D3 transition, firmware won't process
+   pending tx status, causing repeated timeouts across multiple flowrings.
+   Fix by checking bus state before and during the wait loop.
+
+Signed-off-by: Lukas Klizas <lukas@klizas.lt>
+---
+ .../broadcom/brcm80211/brcmfmac/msgbuf.c | 21 +++++++++++++-----
+ .../broadcom/brcm80211/brcmfmac/pcie.c   |  6 +++---
+ 2 files changed, 19 insertions(+), 8 deletions(-)
+
+diff --git a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/msgbuf.c b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/msgbuf.c
+--- a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/msgbuf.c
++++ b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/msgbuf.c
+@@ -1410,13 +1410,26 @@ void brcmf_msgbuf_delete_flowring(struct brcmf_pub *drvr, u16 flowid)
+ 	int err;
+ 	int retry = BRCMF_MAX_TXSTATUS_WAIT_RETRIES;
+
++	/* no need to wait or submit if firmware can not be reached */
++	if (drvr->bus_if->state != BRCMF_BUS_UP) {
++		brcmf_dbg(MSGBUF, "bus down, flowring will be removed\n");
++		brcmf_msgbuf_remove_flowring(msgbuf, flowid);
++		return;
++	}
++
+ 	/* make sure it is not in txflow */
+ 	brcmf_commonring_lock(commonring_del);
+ 	flow->rings[flowid]->status = RING_CLOSING;
+ 	brcmf_commonring_unlock(commonring_del);
+
+-	/* wait for commonring txflow finished */
++	/* wait for commonring txflow finished, but bail if bus goes down */
+ 	while (retry && atomic_read(&commonring_del->outstanding_tx)) {
++		if (drvr->bus_if->state != BRCMF_BUS_UP) {
++			brcmf_dbg(MSGBUF, "bus went down, aborting wait\n");
++			atomic_set(&commonring_del->outstanding_tx, 0);
++			brcmf_msgbuf_remove_flowring(msgbuf, flowid);
++			return;
++		}
+ 		usleep_range(5000, 10000);
+ 		retry--;
+ 	}
+@@ -1425,12 +1438,5 @@ void brcmf_msgbuf_delete_flowring(struct brcmf_pub *drvr, u16 flowid)
+ 		atomic_set(&commonring_del->outstanding_tx, 0);
+ 	}
+
+-	/* no need to submit if firmware can not be reached */
+-	if (drvr->bus_if->state != BRCMF_BUS_UP) {
+-		brcmf_dbg(MSGBUF, "bus down, flowring will be removed\n");
+-		brcmf_msgbuf_remove_flowring(msgbuf, flowid);
+-		return;
+-	}
+-
+ 	commonring = msgbuf->commonrings[BRCMF_H2D_MSGRING_CONTROL_SUBMIT];
+ 	brcmf_commonring_lock(commonring);
+
+diff --git a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/pcie.c b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/pcie.c
+--- a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/pcie.c
++++ b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/pcie.c
+@@ -2643,12 +2643,12 @@ static int brcmf_pcie_pm_enter_D3(struct device *dev)
+ 	wait_event_timeout(devinfo->mbdata_resp_wait, devinfo->mbdata_completed,
+ 			   BRCMF_PCIE_MBDATA_TIMEOUT);
+ 	if (!devinfo->mbdata_completed) {
+ 		brcmf_err(bus, "Timeout on response for entering D3 substate\n");
+-		brcmf_bus_change_state(bus, BRCMF_BUS_UP);
+-		return -EIO;
++		/* Proceed with suspend anyway -- on resume the device will
++		 * be detected as unresponsive and fully re-probed. */
+ 	}
+
+ 	devinfo->state = BRCMFMAC_PCIE_STATE_DOWN;
+
+ 	return 0;
+ }

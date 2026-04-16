@@ -1,0 +1,141 @@
+From: Lukas Klizas <lukas@klizas.lt>
+Date: Thu, 20 Feb 2026 17:00:00 +0200
+Subject: [PATCH] hid: appletb-kbd: fix touchbar suspend/resume on T2 Macs
+
+Three fixes for hid-appletb-kbd suspend/resume behavior:
+
+1. Defer the mode restore on resume to a 1.5s delayed workqueue, and
+   skip the mode-off HID command during suspend. This avoids USB I/O
+   while the device is not yet ready, preventing timeouts and hangs.
+
+2. Use -EPROBE_DEFER if the backlight device is not yet available at
+   probe time, instead of silently continuing without backlight control.
+   This ensures proper probe ordering.
+
+3. Add cancel_delayed_work_sync in suspend and remove paths.
+
+Signed-off-by: Lukas Klizas <lukas@klizas.lt>
+---
+ drivers/hid/hid-appletb-kbd.c | 51 +++++++++++++++++++++-------------
+ 1 file changed, 33 insertions(+), 18 deletions(-)
+
+--- a/drivers/hid/hid-appletb-kbd.c	2026-04-14 14:39:32.325537140 +0300
++++ b/drivers/hid/hid-appletb-kbd.c	2026-04-14 14:40:22.145050707 +0300
+@@ -18,6 +18,7 @@
+ #include <linux/string.h>
+ #include <linux/backlight.h>
+ #include <linux/timer.h>
++#include <linux/workqueue.h>
+ #include <linux/input/sparse-keymap.h>
+ 
+ #include "hid-ids.h"
+@@ -67,6 +68,8 @@
+ 	bool has_turned_off;
+ 	u8 saved_mode;
+ 	u8 current_mode;
++	struct delayed_work mode_work;
++	u8 pending_mode;
+ };
+ 
+ static const struct key_entry appletb_kbd_keymap[] = {
+@@ -114,6 +117,14 @@
+ 	return ret;
+ }
+ 
++static void appletb_kbd_mode_work_fn(struct work_struct *work)
++{
++	struct appletb_kbd *kbd = container_of(work, struct appletb_kbd,
++					       mode_work.work);
++
++	appletb_kbd_set_mode(kbd, kbd->pending_mode);
++}
++
+ static ssize_t mode_show(struct device *dev,
+ 			 struct device_attribute *attr, char *buf)
+ {
+@@ -393,9 +404,17 @@
+ 
+ 	kbd->mode_field = mode_field;
+ 
++	INIT_DELAYED_WORK(&kbd->mode_work, appletb_kbd_mode_work_fn);
++
++	kbd->backlight_dev = backlight_device_get_by_name("appletb_backlight");
++	if (!kbd->backlight_dev)
++		return -EPROBE_DEFER;
++
+ 	ret = hid_hw_start(hdev, HID_CONNECT_HIDINPUT);
+-	if (ret)
+-		return dev_err_probe(dev, ret, "HID hw start failed\n");
++	if (ret) {
++		dev_err_probe(dev, ret, "HID hw start failed\n");
++		goto put_backlight;
++	}
+ 
+ 	ret = hid_hw_open(hdev);
+ 	if (ret) {
+@@ -403,15 +422,10 @@
+ 		goto stop_hw;
+ 	}
+ 
+-	kbd->backlight_dev = backlight_device_get_by_name("appletb_backlight");
+-	if (!kbd->backlight_dev) {
+-		dev_err_probe(dev, -ENODEV, "Failed to get backlight device\n");
+-	} else {
+-		backlight_device_set_brightness(kbd->backlight_dev, 2);
+-		timer_setup(&kbd->inactivity_timer, appletb_inactivity_timer, 0);
+-		mod_timer(&kbd->inactivity_timer,
+-			jiffies + secs_to_jiffies(appletb_tb_dim_timeout));
+-	}
++	backlight_device_set_brightness(kbd->backlight_dev, 2);
++	timer_setup(&kbd->inactivity_timer, appletb_inactivity_timer, 0);
++	mod_timer(&kbd->inactivity_timer,
++		jiffies + secs_to_jiffies(appletb_tb_dim_timeout));
+ 
+ 	kbd->inp_handler.event = appletb_kbd_inp_event;
+ 	kbd->inp_handler.connect = appletb_kbd_inp_connect;
+@@ -440,13 +454,12 @@
+ unregister_handler:
+ 	input_unregister_handler(&kbd->inp_handler);
+ close_hw:
+-	if (kbd->backlight_dev) {
+-		put_device(&kbd->backlight_dev->dev);
+-		timer_delete_sync(&kbd->inactivity_timer);
+-	}
++	timer_delete_sync(&kbd->inactivity_timer);
+ 	hid_hw_close(hdev);
+ stop_hw:
+ 	hid_hw_stop(hdev);
++put_backlight:
++	put_device(&kbd->backlight_dev->dev);
+ 	return ret;
+ }
+ 
+@@ -454,6 +467,8 @@
+ {
+ 	struct appletb_kbd *kbd = hid_get_drvdata(hdev);
+ 
++	cancel_delayed_work_sync(&kbd->mode_work);
++
+ 	appletb_kbd_set_mode(kbd, APPLETB_KBD_MODE_OFF);
+ 
+ 	input_unregister_handler(&kbd->inp_handler);
+@@ -471,8 +486,8 @@
+ {
+ 	struct appletb_kbd *kbd = hid_get_drvdata(hdev);
+ 
++	cancel_delayed_work_sync(&kbd->mode_work);
+ 	kbd->saved_mode = kbd->current_mode;
+-	appletb_kbd_set_mode(kbd, APPLETB_KBD_MODE_OFF);
+ 
+ 	return 0;
+ }
+@@ -481,7 +496,8 @@
+ {
+ 	struct appletb_kbd *kbd = hid_get_drvdata(hdev);
+ 
+-	appletb_kbd_set_mode(kbd, kbd->saved_mode);
++	kbd->pending_mode = kbd->saved_mode;
++	schedule_delayed_work(&kbd->mode_work, msecs_to_jiffies(1500));
+ 
+ 	return 0;
+ }

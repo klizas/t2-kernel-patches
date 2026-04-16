@@ -1,0 +1,69 @@
+From: Lukas Klizas <lukas@klizas.lt>
+Date: Thu, 17 Apr 2026 00:00:00 +0300
+Subject: [PATCH] drm/amd/display: add dc_dram_clock_change_latency_ns module
+ parameter
+
+Add a module parameter to override the DRAM clock change latency the
+Display Mode Library uses when deciding whether memory pstate switching
+is safe. On the Navi 14 dGPUs in the 2019 16" MacBookPro (Radeon Pro
+5300M / 5500M), the hardcoded 404 us in dcn2_0_nv14_soc exceeds the
+vblank hiding budget of the internal 3072x1920 retina panel, so the DML
+marks mclk switching unsupported and the dGPU stays pinned at its
+highest memory pstate whenever the panel is lit.
+
+Default of 0 keeps existing per-ASIC behavior. When set to a non-zero
+value, it is wired through init_data.bb_overrides.dram_clock_change_latency_ns
+in amdgpu_dm_init.
+
+Signed-off-by: Lukas Klizas <lukas@klizas.lt>
+---
+diff --git a/drivers/gpu/drm/amd/amdgpu/amdgpu.h b/drivers/gpu/drm/amd/amdgpu/amdgpu.h
+index b20a06abb..82dcc92a4 100644
+--- a/drivers/gpu/drm/amd/amdgpu/amdgpu.h
++++ b/drivers/gpu/drm/amd/amdgpu/amdgpu.h
+@@ -210,6 +210,7 @@ extern uint amdgpu_dc_feature_mask;
+ extern uint amdgpu_freesync_vid_mode;
+ extern uint amdgpu_dc_debug_mask;
+ extern uint amdgpu_dc_visual_confirm;
++extern int amdgpu_dc_dram_clock_change_latency_ns;
+ extern int amdgpu_dm_abm_level;
+ extern int amdgpu_backlight;
+ extern int amdgpu_damage_clips;
+diff --git a/drivers/gpu/drm/amd/amdgpu/amdgpu_drv.c b/drivers/gpu/drm/amd/amdgpu/amdgpu_drv.c
+index 83567ade8..9b617e951 100644
+--- a/drivers/gpu/drm/amd/amdgpu/amdgpu_drv.c
++++ b/drivers/gpu/drm/amd/amdgpu/amdgpu_drv.c
+@@ -891,6 +891,19 @@ module_param_named(dcdebugmask, amdgpu_dc_debug_mask, uint, 0444);
+ MODULE_PARM_DESC(visualconfirm, "Visual confirm (0 = off (default), 1 = MPO, 5 = PSR)");
+ module_param_named(visualconfirm, amdgpu_dc_visual_confirm, uint, 0444);
+
++/**
++ * DOC: dc_dram_clock_change_latency_ns (int)
++ * Override the DRAM clock change latency in nanoseconds used by the Display
++ * Mode Library for pstate switching decisions. The default of 0 uses the
++ * hardware-specific value (404000 ns for DCN 2.0 dGPU). Lower values allow
++ * memory clock switching at higher display resolutions but risk display
++ * corruption if set below the actual hardware retraining time.
++ */
++int amdgpu_dc_dram_clock_change_latency_ns;
++MODULE_PARM_DESC(dc_dram_clock_change_latency_ns,
++	"Override DRAM clock change latency in ns for display pstate switching (0 = use default)");
++module_param_named(dc_dram_clock_change_latency_ns, amdgpu_dc_dram_clock_change_latency_ns, int, 0444);
++
+ /**
+  * DOC: abmlevel (uint)
+  * Override the default ABM (Adaptive Backlight Management) level used for DC
+diff --git a/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm.c b/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm.c
+index 62622aa62..1d8c7c169 100644
+--- a/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm.c
++++ b/drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm.c
+@@ -2017,6 +2017,10 @@ static int amdgpu_dm_init(struct amdgpu_device *adev)
+ 	else
+ 		init_data.bb_from_dmub = NULL;
+
++	if (amdgpu_dc_dram_clock_change_latency_ns > 0)
++		init_data.bb_overrides.dram_clock_change_latency_ns =
++			amdgpu_dc_dram_clock_change_latency_ns;
++
+ 	/* Display Core create. */
+ 	adev->dm.dc = dc_create(&init_data);
