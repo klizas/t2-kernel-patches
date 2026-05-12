@@ -1,0 +1,68 @@
+From 6f56024e2a7adcaac911700e6f6f0a3f0a5e129e Mon Sep 17 00:00:00 2001
+From: Lukas Klizas <lukas@klizas.lt>
+Date: Tue, 12 May 2026 12:46:54 +0300
+Subject: [PATCH] vga_switcheroo: drop T2 DMI defer for dGPU-equipped T2 Macs
+
+The CachyOS 7.0.6 kernel adds a T2-Mac DMI match (t2_mac_tbl) to
+vga_switcheroo_client_probe_defer() so the AMD GPU probe is deferred
+even when it is the boot VGA device, and pairs it with a new
+EPROBE_DEFER call in amdgpu_pci_probe(). The intent is that
+apple-gmux probes first, switches the panel to the iGPU via
+apple-gmux.force_igd=1, makes i915 the vga_default_device, and the
+AMD GPU then stays out of the display path.
+
+That sequence only works on T2 Macs where the iGPU is fully enabled
+(i.e. apple-set-os has been applied to spoof macOS during the EFI
+handoff). On 15"/16" MacBook Pros (MacBookPro15,*, MacBookPro16,1/2)
+and similar dGPU-equipped T2 models running without apple-set-os, the
+iGPU enumerates but has no VBT and no usable displays; i915 binds as
+a stub and cannot drive the panel. The defer still fires because of
+the DMI match, amdgpu's probe is delayed behind apple-gmux, and the
+resulting device_link / dpm_list topology has amdgpu sequenced after
+gmux for PM purposes. Resume then trips amdgpu's MODE1 hard reset
+fallback and the next suspend hangs with a black panel, requiring a
+forced shutdown.
+
+Restore the pre-7.0.6 condition: defer only when pdev is not the
+vga_default_device. The intended apple-set-os + force_igd flow still
+works, because in that scenario gmux probes first, force_igd sets
+i915 as the default, and amdgpu's later probe satisfies
+pdev != vga_default_device() on its own. Dropping the DMI clause
+removes the only orphan user of include/linux/cachy-t2.h from this
+file.
+
+Signed-off-by: Lukas Klizas <lukas@klizas.lt>
+---
+ drivers/gpu/vga/vga_switcheroo.c | 9 ++++++---
+ 1 file changed, 6 insertions(+), 3 deletions(-)
+
+diff --git a/drivers/gpu/vga/vga_switcheroo.c b/drivers/gpu/vga/vga_switcheroo.c
+index fd7f830..8fe1ae3 100644
+--- a/drivers/gpu/vga/vga_switcheroo.c
++++ b/drivers/gpu/vga/vga_switcheroo.c
+@@ -31,7 +31,6 @@
+ #define pr_fmt(fmt) "vga_switcheroo: " fmt
+ 
+ #include <linux/apple-gmux.h>
+-#include <linux/cachy-t2.h>
+ #include <linux/console.h>
+ #include <linux/debugfs.h>
+ #include <linux/fb.h>
+@@ -439,8 +438,12 @@ find_active_client(struct list_head *head)
+ bool vga_switcheroo_client_probe_defer(struct pci_dev *pdev)
+ {
+ 	if (pci_is_display(pdev)) {
+-		if (apple_gmux_present() && !vgasr_priv.handler_flags &&
+-		    (pdev != vga_default_device() || dmi_check_system(t2_mac_tbl)))
++		/*
++		 * apple-gmux is needed on pre-retina MacBook Pro
++		 * to probe the panel if pdev is the inactive GPU.
++		 */
++		if (apple_gmux_present() && pdev != vga_default_device() &&
++		    !vgasr_priv.handler_flags)
+ 			return true;
+ 	}
+ 
+-- 
+2.54.0
+
