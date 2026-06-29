@@ -22,12 +22,13 @@ Signed-off-by: Lukas Klizas <lukas@klizas.lt>
 
 --- a/drivers/hid/hid-appletb-kbd.c
 +++ b/drivers/hid/hid-appletb-kbd.c
-@@ -68,6 +68,8 @@ struct appletb_kbd {
+@@ -68,7 +68,9 @@ struct appletb_kbd {
  	bool has_turned_off;
  	u8 saved_mode;
  	u8 current_mode;
 +	struct delayed_work mode_work;
 +	u8 pending_mode;
+ 	unsigned long last_fn_press;
  };
 
  static const struct key_entry appletb_kbd_keymap[] = {
