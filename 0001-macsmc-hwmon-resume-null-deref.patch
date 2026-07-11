@@ -1,0 +1,38 @@
+From: Lukas Klizas <lukas@klizas.lt>
+Subject: [PATCH] hwmon: macsmc-hwmon: set platform drvdata; fix NULL deref on resume
+
+macsmc_hwmon_probe() never calls platform_set_drvdata(). The hwmon
+pointer is only passed to devm_hwmon_device_register_with_info(),
+which stores it as drvdata of the hwmon class device, not of the
+platform device.
+
+macsmc_hwmon_resume() reads dev_get_drvdata(&pdev->dev) -- always
+NULL -- and dereferences hwmon->smc: NULL pointer dereference at
+0x8 inside dpm_resume(), killing systemd-sleep while user.slice is
+still frozen. Net effect on a T2 MacBookPro16,1: hard freeze on
+every S3 resume once the driver binds (the is_acpi Intel-Mac
+binding is new in the cachyos-7.1.3-1 tree; DT-only builds never
+bound on these machines, hiding the bug).
+
+Oops fingerprint: RIP macsmc_hwmon_resume+0x2b, CR2=0x8,
+r13 (drvdata) = 0, Comm systemd-sleep, via platform_pm_resume ->
+dpm_run_callback.
+
+Set the platform drvdata in probe.
+
+Signed-off-by: Lukas Klizas <lukas@klizas.lt>
+---
+ drivers/hwmon/macsmc-hwmon.c | 2 ++
+ 1 file changed, 2 insertions(+)
+
+--- a/drivers/hwmon/macsmc-hwmon.c
++++ b/drivers/hwmon/macsmc-hwmon.c
+@@ -1359,6 +1359,8 @@
+ 		return dev_err_probe(hwmon->dev, PTR_ERR(hwmon->hwmon_dev),
+ 				     "Probing SMC hwmon device failed\n");
+ 
++	platform_set_drvdata(pdev, hwmon);
++
+ 	dev_dbg(hwmon->dev, "Registered SMC hwmon device. Sensors:\n");
+ 	dev_dbg(hwmon->dev,
+ 		"Current: %d, Fans: %d, Power: %d, Temperature: %d, Voltage: %d",

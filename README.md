@@ -8,6 +8,10 @@ Kernel patches for my MacBookPro16,1 on CachyOS. Targets T2 Macs with AMD dGPU, 
 
 Patch drops the deferral; the thaw path takes the same inline `cache_cpu_init()` rendezvous regular hotplug uses. Validated via a runtime-equivalent module before rebuild: bringup 8–97 s → 37 ms, resume becomes amdgpu-bound (~1 s). Affects all x86 S3 resume upstream; magnitude scales with core count × HZ × pending tick work.
 
+## `0001-macsmc-hwmon-resume-null-deref.patch`
+
+Hard freeze on every S3 resume with the cachyos-7.1.3-1 tree. `macsmc_hwmon_probe()` never calls `platform_set_drvdata()` — the hwmon pointer only goes to `devm_hwmon_device_register_with_info()`, which sets drvdata on the hwmon class device. `macsmc_hwmon_resume()` reads `dev_get_drvdata(&pdev->dev)` (always NULL) and dereferences `hwmon->smc` → oops at 0x8 in `dpm_resume()`, killing systemd-sleep with user.slice still frozen. Latent until this tree: the `is_acpi` Intel-Mac binding is new; DT-only builds never bound on T2 Macs. One line: set platform drvdata in probe.
+
 ## `0001-brcmfmac-suspend-fix.patch`
 
 Suspend hangs when Broadcom firmware stops responding before the PCI driver finishes suspending.
