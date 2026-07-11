@@ -1,0 +1,50 @@
+From: Lukas Klizas <lukas@klizas.lt>
+Subject: [PATCH] x86/smpboot: don't defer AP cache/MTRR init across S3 resume bringup
+
+On resume from S3, arch_thaw_secondary_cpus_begin() sets
+cache_aps_delayed_init, so cache_ap_online() skips cache_cpu_init() for
+every secondary CPU. MTRRs are only programmed after the last CPU is up,
+in arch_thaw_secondary_cpus_end() -> cache_aps_init().
+
+Until then the APs run with MTRR contents at reset state: MTRRdefType
+reads 0xc00 (enabled, default type UC, no variable ranges programmed),
+so the effective memory type for all of RAM is UC. Each AP executes its
+entire serial bringup — and every tick it services once online — from
+uncached memory. Measured on an i9-9880H (MacBookPro16,1): dependent-ALU
+loops 500-8000x slower, 8 MB memset at 1.7 MB/s, ~1 ms per empty tick at
+HZ=1000. With 11 secondary CPUs the "Enabling non-boot CPUs" phase takes
+8-97 s depending on pending tick work; the soft lockup detector fires on
+cpuhp with 89% hardirq time. HT siblings of the boot CPU are unaffected
+(MTRRs are core-scoped, the sibling sees the boot CPU's live MTRRs and
+reads 0xc06) — that asymmetry confirms the mechanism.
+
+Regular hotplug doesn't defer: cache_ap_online() runs the
+stop_machine_from_inactive_cpu() rendezvous and the incoming CPU gets
+cached before CPUHP_AP_ONLINE. Onlining a CPU that way takes ~25 ms on
+the same machine vs seconds on the thaw path.
+
+Drop the deferral and let the thaw path take the regular hotplug route.
+The per-AP rendezvous costs a brief pause of the already-online CPUs,
+which is noise next to running the bringup uncached.
+
+Signed-off-by: Lukas Klizas <lukas@klizas.lt>
+---
+ arch/x86/kernel/smpboot.c | 2 --
+ 1 file changed, 2 deletions(-)
+
+diff --git a/arch/x86/kernel/smpboot.c b/arch/x86/kernel/smpboot.c
+--- a/arch/x86/kernel/smpboot.c
++++ b/arch/x86/kernel/smpboot.c
+@@ -1147,12 +1147,10 @@
+ 
+ void arch_thaw_secondary_cpus_begin(void)
+ {
+-	set_cache_aps_delayed_init(true);
+ }
+ 
+ void arch_thaw_secondary_cpus_end(void)
+ {
+-	cache_aps_init();
+ }
+ 
+ /*

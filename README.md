@@ -2,6 +2,12 @@
 
 Kernel patches for my MacBookPro16,1 on CachyOS. Targets T2 Macs with AMD dGPU, BCM4364 WiFi, Touch Bar. Based on the CachyOS T2 kernel. May not apply or work elsewhere.
 
+## `0001-x86-resume-cached-cpu-bringup.patch`
+
+"Enabling non-boot CPUs" after S3 took 8–97 s (t2linux folklore calls slow smpboot "normal"). Root cause, not Mac-specific: `arch_thaw_secondary_cpus_begin()` defers AP cache/MTRR init to the end of thaw, so every secondary CPU runs its entire serial bringup with reset-state MTRRs (`MTRRdefType=0xc00` — default type UC, no ranges) — all of RAM uncacheable. Measured on the i9-9880H: ALU loops 500–8000× slower, 8 MB memset at 1.7 MB/s, ~1 ms per empty tick at HZ=1000; HT siblings of the boot CPU immune (MTRRs are core-scoped), which is what identified it.
+
+Patch drops the deferral; the thaw path takes the same inline `cache_cpu_init()` rendezvous regular hotplug uses. Validated via a runtime-equivalent module before rebuild: bringup 8–97 s → 37 ms, resume becomes amdgpu-bound (~1 s). Affects all x86 S3 resume upstream; magnitude scales with core count × HZ × pending tick work.
+
 ## `0001-brcmfmac-suspend-fix.patch`
 
 Suspend hangs when Broadcom firmware stops responding before the PCI driver finishes suspending.
