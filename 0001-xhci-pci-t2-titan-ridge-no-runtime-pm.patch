@@ -1,0 +1,45 @@
+From: Lukas Klizas <lukas@klizas.lt>
+Subject: [PATCH] xhci: pci: don't default to runtime PM on Apple T2 Titan Ridge
+
+The JHL7540 xHCI on T2 Macs never signals PME on port connect. Once the
+controller runtime suspends to D3hot, connects on the external USB-C
+ports are lost entirely: nothing enumerates, nothing appears in dmesg,
+and wakeup_count stays 0. Enabling root hub wakeup does not help,
+because the PME is never sent.
+
+Drop XHCI_DEFAULT_PM_RUNTIME_ALLOW for Titan Ridge on Apple systems.
+The quirk is cleared after the hci_version >= 0x120 rule so that rule
+cannot set it again. This costs ~0.34 W of Thunderbolt idle power on a
+MacBookPro16,1.
+
+Signed-off-by: Lukas Klizas <lukas@klizas.lt>
+---
+ drivers/usb/host/xhci-pci.c | 8 ++++++++
+ 1 file changed, 8 insertions(+)
+
+diff --git a/drivers/usb/host/xhci-pci.c b/drivers/usb/host/xhci-pci.c
+index b0377701a..d46be9e0d 100644
+--- a/drivers/usb/host/xhci-pci.c
++++ b/drivers/usb/host/xhci-pci.c
+@@ -12,6 +12,7 @@
+ #include <linux/slab.h>
+ #include <linux/module.h>
+ #include <linux/acpi.h>
++#include <linux/dmi.h>
+ #include <linux/reset.h>
+ #include <linux/suspend.h>
+ 
+@@ -512,6 +513,13 @@ static void xhci_pci_quirks(struct device *dev, struct xhci_hcd *xhci)
+ 	if (xhci->hci_version >= 0x120)
+ 		xhci->quirks |= XHCI_DEFAULT_PM_RUNTIME_ALLOW;
+ 
++	if (pdev->vendor == PCI_VENDOR_ID_INTEL &&
++	    (pdev->device == PCI_DEVICE_ID_INTEL_TITAN_RIDGE_2C_XHCI ||
++	     pdev->device == PCI_DEVICE_ID_INTEL_TITAN_RIDGE_4C_XHCI ||
++	     pdev->device == PCI_DEVICE_ID_INTEL_TITAN_RIDGE_DD_XHCI) &&
++	    dmi_match(DMI_SYS_VENDOR, "Apple Inc."))
++		xhci->quirks &= ~XHCI_DEFAULT_PM_RUNTIME_ALLOW;
++
+ 	if (xhci->quirks & XHCI_RESET_ON_RESUME)
+ 		xhci_dbg_trace(xhci, trace_xhci_dbg_quirks,
+ 				"QUIRK: Resetting on resume");

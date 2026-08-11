@@ -28,6 +28,16 @@ The in-kernel Touch Bar driver `hid-appletb-kbd` (used without userspace `tiny-d
 - Mode-off at suspend is dropped — the device is losing power anyway, and the write raced USB teardown.
 - Probe now defers (`-EPROBE_DEFER`) when the backlight device isn't ready instead of continuing without it, removing the optional-backlight case.
 
+## `0001-xhci-pci-t2-titan-ridge-no-runtime-pm.patch`
+
+External USB-C ports detect nothing once the Thunderbolt xHCI runtime suspends. The JHL7540 (`8086:15ec`) never signals PME on port connect: in D3hot a plug gets no enumeration, nothing in dmesg, `wakeup_count` stays 0. No trust prompt on an iPhone/iPad, no `usbmuxd`, no storage.
+
+Root hub wakeup is not the missing piece. Enabling it arms the hardware (`lspci` goes `PME-Enable-` → `PME-Enable+` in D3hot), but a plug still produces nothing. Forcing D0, same cable and port, enumerates instantly. The PME is never sent.
+
+Drops `XHCI_DEFAULT_PM_RUNTIME_ALLOW` for Titan Ridge on Apple systems, cleared after the `hci_version >= 0x120` rule so that rule can't set it again. Upstream sets it deliberately ([patchwork 10599433](https://patchwork.kernel.org/patch/10599433/)): an awake xHCI keeps the whole Thunderbolt controller awake. Cost is ~0.34 W idle on a MacBookPro16,1, inside sample noise on battery.
+
+Userspace equivalent, if you don't want to rebuild: `ATTR{vendor}=="0x8086", ATTR{device}=="0x15ec", ATTR{power/control}="on"` in a udev rule.
+
 ## `0001-amdgpu-mclk-override.patch`
 
 Adds `amdgpu.dc_dram_clock_change_latency_ns` to override the DRAM latency the AMD DML uses to decide whether mclk switching is safe.
