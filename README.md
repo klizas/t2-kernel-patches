@@ -38,6 +38,14 @@ Drops `XHCI_DEFAULT_PM_RUNTIME_ALLOW` for Titan Ridge on Apple systems, cleared 
 
 Userspace equivalent, if you don't want to rebuild: `ATTR{vendor}=="0x8086", ATTR{device}=="0x15ec", ATTR{power/control}="on"` in a udev rule.
 
+## `0001-amdgpu-navi14-athub-pg.patch`
+
+Navi 14 is the only navi1x without `AMD_PG_SUPPORT_ATHUB` in `nv_common_early_init()` (`nv.c`); Navi 10 and Navi 12 both set it. The flag gates `FEATURE_ATHUB_PG_BIT` in `navi10_init_allowed_features()` (`navi10_ppt.c`), so PMFW never power-gates ATHUB on Navi 14. Patch adds the flag to the Navi 14 `pg_flags`.
+
+## `0001-amdgpu-navi14-dfll-pll-shutdown.patch`
+
+`navi10_append_powerplay_table()` sets `DPM_OVERRIDE_DISABLE_DFLL_PLL_SHUTDOWN` whenever `PP_GFXOFF_MASK` is set (`TODO: remove it once SMU fw fix it`, no firmware version gate), so the gfx DFLL PLL stays powered through every GFXOFF cycle on all navi1x. Patch skips the override when MP1 is IP version 11.0.5 (Navi 14). Navi 10 and Navi 12 unchanged.
+
 ## `0001-amdgpu-mclk-override.patch`
 
 Adds `amdgpu.dc_dram_clock_change_latency_ns` to override the DRAM latency the AMD DML uses to decide whether mclk switching is safe.

@@ -1,0 +1,26 @@
+From: Lukas Klizas <lukas@klizas.lt>
+Date: Wed, 12 Aug 2026 00:00:00 +0300
+Subject: [PATCH] drm/amdgpu: enable ATHUB power gating on Navi 14
+
+Navi 14 is the only navi1x that does not get AMD_PG_SUPPORT_ATHUB in
+nv_common_early_init(); Navi 10 and Navi 12 both set it. The flag gates
+FEATURE_ATHUB_PG_BIT in navi10_init_allowed_features(), so PMFW never
+power-gates ATHUB on Navi 14. The feature bit exists in the Navi 14
+PMFW interface (smu11_driver_if_navi10.h is shared by all navi1x).
+
+Add AMD_PG_SUPPORT_ATHUB to the Navi 14 pg_flags.
+---
+diff --git a/drivers/gpu/drm/amd/amdgpu/nv.c b/drivers/gpu/drm/amd/amdgpu/nv.c
+index 7ce1a1b95..2835e29bb 100644
+--- a/drivers/gpu/drm/amd/amdgpu/nv.c
++++ b/drivers/gpu/drm/amd/amdgpu/nv.c
+@@ -693,7 +693,8 @@ static int nv_common_early_init(struct amdgpu_ip_block *ip_block)
+ 			AMD_CG_SUPPORT_BIF_LS;
+ 		adev->pg_flags = AMD_PG_SUPPORT_VCN |
+ 			AMD_PG_SUPPORT_JPEG |
+-			AMD_PG_SUPPORT_VCN_DPG;
++			AMD_PG_SUPPORT_VCN_DPG |
++			AMD_PG_SUPPORT_ATHUB;
+ 		adev->external_rev_id = adev->rev_id + 20;
+ 		break;
+ 	case IP_VERSION(10, 1, 2):

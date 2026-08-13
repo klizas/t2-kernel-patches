@@ -1,0 +1,27 @@
+From: Lukas Klizas <lukas@klizas.lt>
+Date: Wed, 12 Aug 2026 00:00:00 +0300
+Subject: [PATCH] drm/amd/pm: allow DFLL PLL shutdown during GFXOFF on Navi 14
+
+navi10_append_powerplay_table() sets
+DPM_OVERRIDE_DISABLE_DFLL_PLL_SHUTDOWN whenever GFXOFF is enabled,
+tagged "TODO: remove it once SMU fw fix it" with no firmware version
+gate. The gfx DFLL PLL therefore stays powered through every GFXOFF
+cycle on all navi1x, on every PMFW ever released.
+
+Skip the override when MP1 is IP version 11.0.5 (Navi 14). Navi 10 and
+Navi 12 keep it.
+---
+diff --git a/drivers/gpu/drm/amd/pm/swsmu/smu11/navi10_ppt.c b/drivers/gpu/drm/amd/pm/swsmu/smu11/navi10_ppt.c
+index 6dfc3b585..b549a6125 100644
+--- a/drivers/gpu/drm/amd/pm/swsmu/smu11/navi10_ppt.c
++++ b/drivers/gpu/drm/amd/pm/swsmu/smu11/navi10_ppt.c
+@@ -450,7 +450,8 @@ static int navi10_append_powerplay_table(struct smu_context *smu)
+ 
+ 	if (adev->pm.pp_feature & PP_GFXOFF_MASK) {
+ 		/* TODO: remove it once SMU fw fix it */
+-		smc_pptable->DebugOverrides |= DPM_OVERRIDE_DISABLE_DFLL_PLL_SHUTDOWN;
++		if (amdgpu_ip_version(adev, MP1_HWIP, 0) != IP_VERSION(11, 0, 5))
++			smc_pptable->DebugOverrides |= DPM_OVERRIDE_DISABLE_DFLL_PLL_SHUTDOWN;
+ 	}
+ 
+ 	return 0;
