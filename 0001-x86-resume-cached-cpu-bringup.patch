@@ -35,7 +35,7 @@ Signed-off-by: Lukas Klizas <lukas@klizas.lt>
 diff --git a/arch/x86/kernel/smpboot.c b/arch/x86/kernel/smpboot.c
 --- a/arch/x86/kernel/smpboot.c
 +++ b/arch/x86/kernel/smpboot.c
-@@ -1147,12 +1147,10 @@
+@@ -1257,13 +1257,11 @@
  
  void arch_thaw_secondary_cpus_begin(void)
  {
@@ -44,6 +44,7 @@ diff --git a/arch/x86/kernel/smpboot.c b/arch/x86/kernel/smpboot.c
  
  void arch_thaw_secondary_cpus_end(void)
  {
+ 	clocksource_touch_watchdog();
 -	cache_aps_init();
  }
  
