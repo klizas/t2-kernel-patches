@@ -1,0 +1,32 @@
+From: klizas <lukas@klizas.lt>
+Subject: [PATCH] drm/appletbdrm: pad requests that are a multiple of the bulk
+ max packet size
+
+A framebuffer request whose total size is an exact multiple of the bulk
+OUT endpoint's wMaxPacketSize (512) is never terminated on the wire:
+usb_bulk_msg() does not send a zero-length packet and the device
+delimits messages by short packets. The device's parser then waits for
+the rest of the message forever, stops responding, and every later
+flush stalls for APPLETBDRM_BULK_MSG_TIMEOUT until the device is reset.
+
+Request sizes are 16-aligned, so roughly 1 in 32 damage rect sizes hits
+the boundary, which is why partial updates seemed to fail under load
+while full-frame updates (a constant size that is not a multiple) never
+fail.
+
+Pad such requests by 16 bytes. The device accepts trailing padding
+counted in the header size: the existing ALIGN(..., 16) sends up to 15
+padding bytes today.
+
+--- a/drivers/gpu/drm/tiny/appletbdrm.c
++++ b/drivers/gpu/drm/tiny/appletbdrm.c
+@@ -336,6 +336,9 @@
+ 		       frames_size +
+ 		       sizeof(struct appletbdrm_fb_request_footer), 16);
+ 
++	if (!(request_size % SZ_512))
++		request_size += 16;
++
+ 	appletbdrm_state->request = kvzalloc(request_size, GFP_KERNEL);
+ 
+ 	if (!appletbdrm_state->request)

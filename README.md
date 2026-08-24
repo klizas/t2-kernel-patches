@@ -38,6 +38,10 @@ Drops `XHCI_DEFAULT_PM_RUNTIME_ALLOW` for Titan Ridge on Apple systems, cleared 
 
 Userspace equivalent, if you don't want to rebuild: `ATTR{vendor}=="0x8086", ATTR{device}=="0x15ec", ATTR{power/control}="on"` in a udev rule.
 
+## `0001-appletbdrm-zlp-pad.patch`
+
+A framebuffer request sized an exact multiple of the bulk OUT `wMaxPacketSize` (512) never terminates: `usb_bulk_msg()` sends no zero-length packet and the device delimits messages by short packets, so its parser hangs and the Touch Bar is dead until a USB reset. Damage-clip request sizes are 16-aligned, so ~1/32 of rect sizes hit the boundary ("partial flush freezes under load"); full-frame requests are a constant safe size. Pad such requests by 16 bytes — trailing padding counted in `header.size` is already accepted.
+
 ## `0001-amdgpu-navi14-athub-pg.patch`
 
 Navi 14 is the only navi1x without `AMD_PG_SUPPORT_ATHUB` in `nv_common_early_init()` (`nv.c`); Navi 10 and Navi 12 both set it. The flag gates `FEATURE_ATHUB_PG_BIT` in `navi10_init_allowed_features()` (`navi10_ppt.c`), so PMFW never power-gates ATHUB on Navi 14. Patch adds the flag to the Navi 14 `pg_flags`.
