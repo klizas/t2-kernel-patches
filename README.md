@@ -20,6 +20,15 @@ Suspend hangs when Broadcom firmware stops responding before the PCI driver fini
 - `brcmf_pcie_pm_leave_D3` checks the flag on resume and forces the existing remove + re-probe path (firmware reload). INTMASK alone can't detect the hang: firmware that timed out on D3_INFORM can still return nonzero INTMASK, hot-resuming into a zombie (associated, DHCP up, data path dead). Toggling networking in that state can wedge the chip's PCIe interface → whole-machine hard lock.
 - `brcmf_msgbuf_delete_flowring` waits for `outstanding_tx` to drain before checking bus state, burning 5–10ms × 10 retries per flowring. Patch checks bus state before and during the wait.
 
+## `0002-brcmfmac-resume-liveness-probe.patch`
+
+Applies on top of `0001-brcmfmac-suspend-fix.patch`. Covers the wedge that patch can't see: BCM4364 firmware ACKs D3_INFORM, then loses its msgbuf ring state across S3. Trigger is suspending shortly after a deauth (`brcmf_cfg80211_suspend` does `brcmf_link_down` + 500 ms settle, not always enough). On resume INTMASK reads nonzero → hot-resume path → every control message times out `-EIO` forever. A dead firmware sends no FWHALT mailbox, so nothing arms the reset worker; dead until reboot.
+
+- `brcmf_pcie_pm_leave_D3`: all-ones INTMASK = dead MMIO, take the re-probe path.
+- `brcmf_cfg80211_resume`: one `BRCMF_C_GET_VERSION` probe per resume; on failure schedule the bus_reset worker (un-static'd `brcmf_bus_schedule_reset`) → full firmware reload, ~15 s to reassociation. Skips `brcmf_fw_crashed`'s coredump: MMIO reads on a wedged chip can hard-lock the machine.
+
+Manual recovery lever, patch or not: `echo 1 > /sys/kernel/debug/ieee80211/phyN/reset` (CONFIG_BRCMDBG).
+
 ## `0001-touchbar-suspend-resume.patch`
 
 The in-kernel Touch Bar driver `hid-appletb-kbd` (used without userspace `tiny-dfr`) comes back blank after resume.
