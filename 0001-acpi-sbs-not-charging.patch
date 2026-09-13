@@ -1,0 +1,42 @@
+From: klizas <lukas@klizas.lt>
+Subject: [PATCH] ACPI: SBS: report Not charging when a battery is held below
+ full
+
+acpi_sbs_battery_get_property() reports POWER_SUPPLY_STATUS_FULL
+whenever the battery current is zero. A battery that a charge limit
+holds below full reads as Full at any charge level.
+
+On a MacBookPro16,1 with the SMC charge limit (BCLM) set to 92, charging
+stops at 92% and the gauge (bq40z451) BatteryStatus reads 0x00c0:
+INITIALIZED and DISCHARGING set, FULLY_CHARGED clear. sysfs still
+reported Full.
+
+Report Full only when the gauge sets FULLY_CHARGED in BatteryStatus
+(0x16), which sbs already reads into battery->state. With zero current
+and a system supply online, report Not charging, as drivers/acpi/battery.c
+does. With zero current and no supply online, report Discharging.
+
+--- a/drivers/acpi/sbs.c
++++ b/drivers/acpi/sbs.c
+@@ -42,6 +42,7 @@
+ MODULE_PARM_DESC(cache_time, "cache time in milliseconds");
+ 
+ #define MAX_SBS_BAT			4
++#define ACPI_SBS_BATTERY_FULLY_CHARGED	0x0020
+ #define ACPI_SBS_BLOCK_MAX		32
+ 
+ static const struct acpi_device_id sbs_device_ids[] = {
+@@ -170,8 +171,12 @@
+ 			val->intval = POWER_SUPPLY_STATUS_DISCHARGING;
+ 		else if (battery->rate_now > 0)
+ 			val->intval = POWER_SUPPLY_STATUS_CHARGING;
+-		else
++		else if (battery->state & ACPI_SBS_BATTERY_FULLY_CHARGED)
+ 			val->intval = POWER_SUPPLY_STATUS_FULL;
++		else if (power_supply_is_system_supplied() > 0)
++			val->intval = POWER_SUPPLY_STATUS_NOT_CHARGING;
++		else
++			val->intval = POWER_SUPPLY_STATUS_DISCHARGING;
+ 		break;
+ 	case POWER_SUPPLY_PROP_PRESENT:
+ 		val->intval = battery->present;

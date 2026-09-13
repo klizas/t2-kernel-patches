@@ -73,3 +73,7 @@ Add `amdgpu.dc_dram_clock_change_latency_ns=400000` to your kernel options. Tune
 Useful range is below 404000. Ceiling depends on active display timing (vblank per frame), not pixel count or refresh rate alone. Higher-bandwidth modes (4K, high refresh, external + internal) lower it.
 
 `0` or unpatched keeps stock behavior.
+
+## `0001-acpi-sbs-not-charging.patch`
+
+`sbs` reports `Full` whenever battery current is zero, so a battery held by the SMC charge limit (`BCLM`) reads `Full` at 80%. The gauge knows better: SBS `BatteryStatus` (0x16) has `FULLY_CHARGED` (0x20) clear. Report `Full` only when that bit is set, otherwise `Not charging` with AC online and `Discharging` without, matching `drivers/acpi/battery.c`.
