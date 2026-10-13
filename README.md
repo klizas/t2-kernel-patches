@@ -51,6 +51,10 @@ Userspace equivalent, if you don't want to rebuild: `ATTR{vendor}=="0x8086", ATT
 
 A framebuffer request sized an exact multiple of the bulk OUT `wMaxPacketSize` (512) never terminates: `usb_bulk_msg()` sends no zero-length packet and the device delimits messages by short packets, so its parser hangs and the Touch Bar is dead until a USB reset. Damage-clip request sizes are 16-aligned, so ~1/32 of rect sizes hit the boundary ("partial flush freezes under load"); full-frame requests are a constant safe size. Pad such requests by 16 bytes — trailing padding counted in `header.size` is already accepted.
 
+## `0001-appletbdrm-kzalloc-request.patch`
+
+Applies on top of `0001-appletbdrm-zlp-pad.patch`. `begin_fb_access()` allocates the whole request with `kvzalloc()`. A full-frame request is several hundred KiB, so under fragmentation it lands in vmalloc, `usb_hcd_map_urb_for_dma()` → `dma_map_single()` refuses it (`apple-bce 0000:04:00.1: rejecting DMA map of vmalloc memory`, `WARNING: dma-mapping.h:524`, from `drm_mode_setcrtc` in `touchbar-rs`), and the frame is dropped. Seen once in 3 days. Patch uses `kzalloc()`/`kfree()`: GFP_KERNEL compacts before giving up, and a failure returns `-ENOMEM` from the commit instead.
+
 ## `0001-amdgpu-navi14-athub-pg.patch`
 
 Navi 14 is the only navi1x without `AMD_PG_SUPPORT_ATHUB` in `nv_common_early_init()` (`nv.c`); Navi 10 and Navi 12 both set it. The flag gates `FEATURE_ATHUB_PG_BIT` in `navi10_init_allowed_features()` (`navi10_ppt.c`), so PMFW never power-gates ATHUB on Navi 14. Patch adds the flag to the Navi 14 `pg_flags`.

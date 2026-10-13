@@ -1,0 +1,42 @@
+From: klizas <lukas@klizas.lt>
+Subject: [PATCH] drm/appletbdrm: allocate the framebuffer request with kzalloc
+
+begin_fb_access() allocates the whole framebuffer request with
+kvzalloc() and later sends it with usb_bulk_msg(). A full-frame request
+is several hundred KiB, so when memory is fragmented kvzalloc() falls
+back to vmalloc(). The USB core maps the transfer buffer with
+dma_map_single(), which refuses vmalloc memory, the URB is never
+submitted and the frame is dropped:
+
+  apple-bce 0000:04:00.1: rejecting DMA map of vmalloc memory
+  WARNING: ./include/linux/dma-mapping.h:524 at dma_map_single_attrs+0x86/0xc0
+   usb_hcd_map_urb_for_dma+0x36c/0x3f0
+   usb_start_wait_urb+0x8f/0x1d0
+   appletbdrm_primary_plane_helper_atomic_update+0x311/0x400 [appletbdrm]
+
+USB transfer buffers must be physically contiguous. Allocate the request
+with kzalloc() and free it with kfree(). Unlike the kmalloc attempt
+inside kvzalloc(), a plain GFP_KERNEL allocation compacts memory before
+it gives up, and a failure makes the commit return -ENOMEM instead of
+dropping the frame later.
+
+--- a/drivers/gpu/drm/tiny/appletbdrm.c
++++ b/drivers/gpu/drm/tiny/appletbdrm.c
+@@ -339,7 +339,7 @@
+ 	if (!(request_size % SZ_512))
+ 		request_size += 16;
+ 
+-	appletbdrm_state->request = kvzalloc(request_size, GFP_KERNEL);
++	appletbdrm_state->request = kzalloc(request_size, GFP_KERNEL);
+ 
+ 	if (!appletbdrm_state->request)
+ 		return -ENOMEM;
+@@ -552,7 +552,7 @@
+ {
+ 	struct appletbdrm_plane_state *appletbdrm_state = to_appletbdrm_plane_state(state);
+ 
+-	kvfree(appletbdrm_state->request);
++	kfree(appletbdrm_state->request);
+ 	kfree(appletbdrm_state->response);
+ 
+ 	__drm_gem_destroy_shadow_plane_state(&appletbdrm_state->base);
