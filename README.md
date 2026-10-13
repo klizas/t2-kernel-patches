@@ -59,6 +59,10 @@ Navi 14 is the only navi1x without `AMD_PG_SUPPORT_ATHUB` in `nv_common_early_in
 
 `navi10_append_powerplay_table()` sets `DPM_OVERRIDE_DISABLE_DFLL_PLL_SHUTDOWN` whenever `PP_GFXOFF_MASK` is set (`TODO: remove it once SMU fw fix it`, no firmware version gate), so the gfx DFLL PLL stays powered through every GFXOFF cycle on all navi1x. Patch skips the override when MP1 is IP version 11.0.5 (Navi 14). Navi 10 and Navi 12 unchanged.
 
+## `0001-amdgpu-navi14-uclk-hard-max.patch`
+
+From KAIT2EN (André Eikmeyer, `patches/runtime/gpu-runtime-pm/0008`).
+
 ## `0001-amdgpu-mclk-override.patch`
 
 Adds `amdgpu.dc_dram_clock_change_latency_ns` to override the DRAM latency the AMD DML uses to decide whether mclk switching is safe.
