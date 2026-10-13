@@ -85,3 +85,7 @@ Useful range is below 404000. Ceiling depends on active display timing (vblank p
 ## `0002-acpi-sbs-refresh-full-charge-capacity.patch`
 
 From KAIT2EN (André Eikmeyer, `patches/upstream/prepared/acpi-sbs-battery-state-v1/0001`).
+
+## `0003-acpi-sbs-relative-state-of-charge.patch`
+
+From KAIT2EN (André Eikmeyer, `patches/upstream/prepared/acpi-sbs-battery-state-v1/0002`).
