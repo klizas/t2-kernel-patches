@@ -81,3 +81,7 @@ Useful range is below 404000. Ceiling depends on active display timing (vblank p
 ## `0001-acpi-sbs-not-charging.patch`
 
 `sbs` reports `Full` whenever battery current is zero, so a battery held by the SMC charge limit (`BCLM`) reads `Full` at 80%. The gauge knows better: SBS `BatteryStatus` (0x16) has `FULLY_CHARGED` (0x20) clear. Report `Full` only when that bit is set, otherwise `Not charging` with AC online and `Discharging` without, matching `drivers/acpi/battery.c`.
+
+## `0002-acpi-sbs-refresh-full-charge-capacity.patch`
+
+From KAIT2EN (André Eikmeyer, `patches/upstream/prepared/acpi-sbs-battery-state-v1/0001`).
