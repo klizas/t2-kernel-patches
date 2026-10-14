@@ -1,0 +1,160 @@
+From: klizas <lukas@klizas.lt>
+Subject: [PATCH] hwmon: applesmc-t2: log the previous shutdown cause
+
+The SMC records why it last shut the x86 side down in MSSD (si8). The
+next shutdown overwrites it, so a power-off can only be explained if
+something reads MSSD on the boot after it. macOS logs it at boot as
+"Previous shutdown cause".
+
+Log MSSD at probe, named from KAIT2EN's cause table (Apple names from
+PowerManagement, the rest from community lists). Mirror the writes of
+AppleSMC::smcPublishShutdownCause: -64 (kernel panic) counts only while
+MSSW is 1, and MSSW is cleared after reporting it. Without MSSW, the
+one-shot -62 is reset to 6.
+
+MSSD stays unchanged when the T2 panics and takes the x86 side down, so
+also log MSPP, MSPR, EFBS and MSPU raw, to compare against a clean boot.
+
+MacBookPro16,1 after a clean reboot:
+
+  previous shutdown cause: 5 (Software initiated shutdown, Apple)
+  previous x86 state: MSPP=00 MSPR=00 EFBS=0e MSPU=00 02 00 04 06 07
+
+Ported from t2smc_log_shutdown_cause() and t2smc_log_x86_state() in
+KAIT2EN modules/t2smc (André Eikmeyer).
+
+--- a/drivers/hwmon/applesmc-t2.c
++++ b/drivers/hwmon/applesmc-t2.c
+@@ -109,6 +109,14 @@
+ #define BATTERY_STATE_FULLY_CHARGED	BIT(5)
+ #define BATTERY_TIME_UNKNOWN		0xffff
+ 
++#define SHUTDOWN_CAUSE_KEY	"MSSD" /* r-w si8 */
++#define SHUTDOWN_FLAG_KEY	"MSSW" /* r-w flag, confirms cause -64 */
++
++/* Causes that AppleSMC::smcPublishShutdownCause treats specially */
++#define SHUTDOWN_CAUSE_FLAGGED	-64 /* only valid while MSSW is 1 */
++#define SHUTDOWN_CAUSE_ONE_SHOT	-62 /* reset to 6 once reported */
++#define SHUTDOWN_CAUSE_RESET	6
++
+ /* List of keys used to read/write fan speeds */
+ static const char *const fan_speed_fmt[] = {
+ 	"F%dAc",		/* actual speed */
+@@ -985,6 +993,108 @@
+ 	return ret;
+ }
+ 
++/*
++ * Apple names come from PowerManagement common/CommonLib.c, the others from
++ * community lists. Table from KAIT2EN t2smc.
++ */
++static const struct {
++	s8 cause;
++	bool apple;
++	const char *desc;
++} applesmc_shutdown_causes[] = {
++	{    0, true,  "Battery disconnected" },
++	{    1, true,  "Normal warm reset" },
++	{    2, true,  "Power supply disconnected" },
++	{    3, true,  "Power button pressed for > 4 sec" },
++	{    5, true,  "Software initiated shutdown" },
++	{    7, true,  "Normal shutdown by SOC" },
++	{   -3, false, "Multiple temperature sensors too high" },
++	{  -14, false, "Electricity spike or surge" },
++	{  -20, false, "BridgeOS (T2) initiated shutdown" },
++	{  -60, true,  "Battery fully drained" },
++	{  -61, false, "Watchdog detected unresponsive app, shutting down" },
++	{  -62, false, "Watchdog detected unresponsive app, restarting" },
++	{  -64, false, "Kernel panic" },
++	{  -71, false, "Memory temperature too high" },
++	{  -74, false, "Battery temperature too high" },
++	{  -75, false, "Power adapter communication problem" },
++	{  -78, false, "Incorrect input current from power adapter" },
++	{  -79, false, "Incorrect current from battery" },
++	{  -81, true,  "Thermal shutdown for overtemp" },
++	{  -86, false, "Proximity temperature too high" },
++	{ -100, false, "Power supply temperature too high" },
++	{ -101, false, "Display temperature too high" },
++	{ -102, false, "Overvoltage" },
++	{ -103, false, "Battery voltage too low" },
++	{ -104, false, "Unknown battery fault" },
++	{ -127, false, "PMU/SMC forced shutdown for another cause" },
++};
++
++/* The writes mirror macOS, so that a one-shot cause is reported only once */
++static void applesmc_log_shutdown_cause(struct applesmc_device *smc)
++{
++	bool has_cause, has_flag;
++	u8 flag = 0, val = 0;
++	s8 cause;
++	int i;
++
++	if (applesmc_has_key(smc, SHUTDOWN_CAUSE_KEY, &has_cause) || !has_cause)
++		return;
++	if (applesmc_has_key(smc, SHUTDOWN_FLAG_KEY, &has_flag))
++		return;
++	if (has_flag && applesmc_read_key(smc, SHUTDOWN_FLAG_KEY, &flag, 1))
++		flag = 0;
++
++	if (applesmc_read_key(smc, SHUTDOWN_CAUSE_KEY, (u8 *)&cause, 1)) {
++		dev_warn(smc->ldev, "failed to read the previous shutdown cause\n");
++		return;
++	}
++
++	if (has_flag && cause == SHUTDOWN_CAUSE_FLAGGED) {
++		if (flag != 1)
++			cause = SHUTDOWN_CAUSE_RESET;
++		else if (applesmc_write_key(smc, SHUTDOWN_FLAG_KEY, &val, 1))
++			dev_warn(smc->ldev, "failed to clear MSSW\n");
++	} else if (!has_flag && cause == SHUTDOWN_CAUSE_ONE_SHOT) {
++		val = SHUTDOWN_CAUSE_RESET;
++		if (applesmc_write_key(smc, SHUTDOWN_CAUSE_KEY, &val, 1))
++			dev_warn(smc->ldev, "failed to reset MSSD\n");
++	}
++
++	for (i = 0; i < ARRAY_SIZE(applesmc_shutdown_causes); i++)
++		if (applesmc_shutdown_causes[i].cause == cause)
++			break;
++	if (i == ARRAY_SIZE(applesmc_shutdown_causes))
++		dev_info(smc->ldev, "previous shutdown cause: %d (unknown)\n",
++			 cause);
++	else
++		dev_info(smc->ldev, "previous shutdown cause: %d (%s, %s)\n",
++			 cause, applesmc_shutdown_causes[i].desc,
++			 applesmc_shutdown_causes[i].apple ? "Apple" : "community");
++}
++
++/* MSSD stays unchanged when the T2 panics, so log these to compare boots */
++static void applesmc_log_x86_state(struct applesmc_device *smc)
++{
++	static const char *const keys[] = { "MSPP", "MSPR", "EFBS", "MSPU" };
++	const struct applesmc_entry *entry;
++	char line[128];
++	size_t pos = 0;
++	u8 buf[8];
++	int i;
++
++	for (i = 0; i < ARRAY_SIZE(keys); i++) {
++		entry = applesmc_get_entry_by_key(smc, keys[i]);
++		if (IS_ERR(entry) || !entry->len || entry->len > sizeof(buf) ||
++		    applesmc_read_entry(smc, entry, buf, entry->len))
++			continue;
++		pos += scnprintf(line + pos, sizeof(line) - pos, " %s=%*ph",
++				 keys[i], entry->len, buf);
++	}
++	if (pos)
++		dev_info(smc->ldev, "previous x86 state:%s\n", line);
++}
++
+ /* Device model stuff */
+ 
+ static int applesmc_init_resources(struct applesmc_device *smc);
+@@ -1015,6 +1125,8 @@
+ 		goto out_res;
+ 
+ 	applesmc_device_init(smc);
++	applesmc_log_shutdown_cause(smc);
++	applesmc_log_x86_state(smc);
+ 
+ 	ret = applesmc_create_modules(smc);
+ 	if (ret)

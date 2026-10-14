@@ -93,3 +93,7 @@ From KAIT2EN (André Eikmeyer, `patches/upstream/prepared/acpi-sbs-battery-state
 ## `0001-applesmc-t2-smc-battery.patch`
 
 `BAT0` from SMC keys in `applesmc-t2` instead of `sbs`, which costs 153–231 EC GPEs per refresh (needs `CONFIG_ACPI_SBS=n`).
+
+## `0002-applesmc-t2-shutdown-cause.patch`
+
+Logs `MSSD` (previous shutdown cause) and raw `MSPP`/`MSPR`/`EFBS`/`MSPU` at probe. From KAIT2EN (André Eikmeyer, `modules/t2smc`).
