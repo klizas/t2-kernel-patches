@@ -89,3 +89,7 @@ From KAIT2EN (André Eikmeyer, `patches/upstream/prepared/acpi-sbs-battery-state
 ## `0003-acpi-sbs-relative-state-of-charge.patch`
 
 From KAIT2EN (André Eikmeyer, `patches/upstream/prepared/acpi-sbs-battery-state-v1/0002`).
+
+## `0001-applesmc-t2-smc-battery.patch`
+
+`BAT0` from SMC keys in `applesmc-t2` instead of `sbs`, which costs 153–231 EC GPEs per refresh (needs `CONFIG_ACPI_SBS=n`).

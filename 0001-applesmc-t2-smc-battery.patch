@@ -1,0 +1,319 @@
+From: klizas <lukas@klizas.lt>
+Subject: [PATCH] hwmon: applesmc-t2: register the battery from SMC keys
+
+On T2 Macs the ACPI SBS driver reaches the battery gauge through the EC
+SMBus. Each EC byte handshake raises GPE 0x6E, about 23 per SMBus word.
+One BAT0 refresh costs 153 to 231 GPEs and about 32 ms of irq/9-acpi
+time, and userspace refreshes BAT0 about every 20 s.
+
+The SMC polls the same gauge (bq40z451 on a MacBookPro16,1) and exposes
+the values as keys. Reading a key goes through the SMC I/O ports and
+raises no GPE: 234 key reads in 2.9 s left gpe6E unchanged.
+
+Register a BAT0 power supply from these keys when BBIN exists. Build the
+kernel with CONFIG_ACPI_SBS=n, so that sbs does not take the name first.
+If registration fails, the driver loads without the battery.
+
+The keys were checked against sbs on battery, while charging and at the
+BCLM charge limit. Byte order differs per key:
+
+- B0DC and B0TE are little endian although the SMC reports ui16. B0DC
+  reads 8700 mAh, the sbs charge_full_design. B0TE reads 185 min at
+  6619 mAh and 2145 mA.
+- B0TF, B0RM, B0FC, B0AV, B0AC, BRSC and B0CT are big endian.
+
+Status uses the order of acpi/sbs.c with 0001-acpi-sbs-not-charging.patch:
+the sign of B0AC, then FULLY_CHARGED in B0St (the gauge's BatteryStatus
+word), then BSIn bit 1 (AC present) for Not charging.
+
+sbs properties without an SMC key: manufacturer, model_name,
+voltage_min_design (BITV reads 0), current_avg, alarm.
+
+--- a/drivers/hwmon/applesmc-t2.c
++++ b/drivers/hwmon/applesmc-t2.c
+@@ -32,6 +32,7 @@
+ #include <linux/io.h>
+ #include <linux/leds.h>
+ #include <linux/hwmon.h>
++#include <linux/power_supply.h>
+ #include <linux/workqueue.h>
+ #include <linux/err.h>
+ #include <linux/bits.h>
+@@ -90,6 +91,24 @@
+ #define TEMP_SENSOR_TYPE	"sp78"
+ #define FLOAT_TYPE		"flt "
+ 
++#define BATTERY_PRESENT_KEY	"BBIN" /* r-o flag */
++#define BATTERY_INFO_KEY	"BSIn" /* r-o hex_, bit 1: AC present */
++#define BATTERY_STATE_KEY	"B0St" /* r-o hex_ (2 bytes), SBS BatteryStatus */
++#define BATTERY_CAPACITY_KEY	"BRSC" /* r-o ui16 percent */
++#define BATTERY_CYCLES_KEY	"B0CT" /* r-o ui16 */
++#define BATTERY_VOLTAGE_KEY	"B0AV" /* r-o ui16 mV */
++#define BATTERY_CURRENT_KEY	"B0AC" /* r-o si16 mA, negative while discharging */
++#define BATTERY_DESIGN_KEY	"B0DC" /* r-o ui16 mAh, little endian */
++#define BATTERY_FULL_KEY	"B0FC" /* r-o ui16 mAh */
++#define BATTERY_REMAINING_KEY	"B0RM" /* r-o ui16 mAh */
++#define BATTERY_TEMP_KEY	"TB0T" /* r-o sp78 */
++#define BATTERY_TO_EMPTY_KEY	"B0TE" /* r-o ui16 minutes, little endian */
++#define BATTERY_TO_FULL_KEY	"B0TF" /* r-o ui16 minutes */
++
++#define BATTERY_INFO_AC_PRESENT		BIT(1)
++#define BATTERY_STATE_FULLY_CHARGED	BIT(5)
++#define BATTERY_TIME_UNKNOWN		0xffff
++
+ /* List of keys used to read/write fan speeds */
+ static const char *const fan_speed_fmt[] = {
+ 	"F%dAc",		/* actual speed */
+@@ -168,6 +187,7 @@
+ 
+ 	struct device *hwmon_dev;
+ 	struct input_dev *idev;
++	struct power_supply *battery;
+ 
+ 	/*
+ 	 * Last index written to key_at_index sysfs file, and value to use for all other
+@@ -737,6 +757,40 @@
+ 	return 0;
+ }
+ 
++/*
++ * applesmc_read_u16 - Read 16-bit unsigned big endian register
++ */
++static int applesmc_read_u16(struct applesmc_device *smc,
++	const char *key, u16 *value)
++{
++	u8 buffer[2];
++	int ret;
++
++	ret = applesmc_read_key(smc, key, buffer, 2);
++	if (ret)
++		return ret;
++
++	*value = ((u16)buffer[0] << 8) | buffer[1];
++	return 0;
++}
++
++/*
++ * applesmc_read_le16 - Read 16-bit unsigned little endian register
++ */
++static int applesmc_read_le16(struct applesmc_device *smc,
++	const char *key, u16 *value)
++{
++	u8 buffer[2];
++	int ret;
++
++	ret = applesmc_read_key(smc, key, buffer, 2);
++	if (ret)
++		return ret;
++
++	*value = ((u16)buffer[1] << 8) | buffer[0];
++	return 0;
++}
++
+ /**
+  * applesmc_float_to_u32 - Retrieve the integral part of a float.
+  * This is needed because Apple made fans use float values in the T2.
+@@ -1812,6 +1866,186 @@
+ 	destroy_workqueue(smc->backlight_wq);
+ }
+ 
++static const enum power_supply_property applesmc_battery_props[] = {
++	POWER_SUPPLY_PROP_STATUS,
++	POWER_SUPPLY_PROP_PRESENT,
++	POWER_SUPPLY_PROP_TECHNOLOGY,
++	POWER_SUPPLY_PROP_CYCLE_COUNT,
++	POWER_SUPPLY_PROP_VOLTAGE_NOW,
++	POWER_SUPPLY_PROP_CURRENT_NOW,
++	POWER_SUPPLY_PROP_CHARGE_FULL_DESIGN,
++	POWER_SUPPLY_PROP_CHARGE_FULL,
++	POWER_SUPPLY_PROP_CHARGE_NOW,
++	POWER_SUPPLY_PROP_CAPACITY,
++	POWER_SUPPLY_PROP_TEMP,
++	POWER_SUPPLY_PROP_TIME_TO_EMPTY_NOW,
++	POWER_SUPPLY_PROP_TIME_TO_FULL_NOW,
++};
++
++/* Same order as acpi/sbs.c: the current first, then the gauge's full flag */
++static int applesmc_battery_status(struct applesmc_device *smc, int *status)
++{
++	s16 current_ma;
++	u16 state;
++	u8 info;
++	int ret;
++
++	ret = applesmc_read_s16(smc, BATTERY_CURRENT_KEY, &current_ma);
++	if (ret)
++		return ret;
++	if (current_ma < 0) {
++		*status = POWER_SUPPLY_STATUS_DISCHARGING;
++		return 0;
++	}
++	if (current_ma > 0) {
++		*status = POWER_SUPPLY_STATUS_CHARGING;
++		return 0;
++	}
++
++	ret = applesmc_read_u16(smc, BATTERY_STATE_KEY, &state);
++	if (ret)
++		return ret;
++	if (state & BATTERY_STATE_FULLY_CHARGED) {
++		*status = POWER_SUPPLY_STATUS_FULL;
++		return 0;
++	}
++
++	ret = applesmc_read_key(smc, BATTERY_INFO_KEY, &info, 1);
++	if (ret)
++		return ret;
++	*status = info & BATTERY_INFO_AC_PRESENT ?
++		POWER_SUPPLY_STATUS_NOT_CHARGING :
++		POWER_SUPPLY_STATUS_DISCHARGING;
++	return 0;
++}
++
++static int applesmc_battery_read(struct applesmc_device *smc,
++	enum power_supply_property psp, union power_supply_propval *val)
++{
++	int scale = 1;
++	s16 svalue;
++	u16 value;
++	u8 flag;
++	int ret;
++
++	switch (psp) {
++	case POWER_SUPPLY_PROP_STATUS:
++		return applesmc_battery_status(smc, &val->intval);
++	case POWER_SUPPLY_PROP_PRESENT:
++		ret = applesmc_read_key(smc, BATTERY_PRESENT_KEY, &flag, 1);
++		if (ret)
++			return ret;
++		val->intval = !!flag;
++		return 0;
++	case POWER_SUPPLY_PROP_TECHNOLOGY:
++		val->intval = POWER_SUPPLY_TECHNOLOGY_LION;
++		return 0;
++	case POWER_SUPPLY_PROP_CURRENT_NOW:
++		ret = applesmc_read_s16(smc, BATTERY_CURRENT_KEY, &svalue);
++		if (ret)
++			return ret;
++		val->intval = abs(svalue) * 1000;
++		return 0;
++	case POWER_SUPPLY_PROP_TEMP:
++		ret = applesmc_read_s16(smc, BATTERY_TEMP_KEY, &svalue);
++		if (ret)
++			return ret;
++		val->intval = 25 * (svalue >> 6) / 10;
++		return 0;
++	case POWER_SUPPLY_PROP_CYCLE_COUNT:
++		ret = applesmc_read_u16(smc, BATTERY_CYCLES_KEY, &value);
++		break;
++	case POWER_SUPPLY_PROP_CAPACITY:
++		ret = applesmc_read_u16(smc, BATTERY_CAPACITY_KEY, &value);
++		break;
++	case POWER_SUPPLY_PROP_VOLTAGE_NOW:
++		ret = applesmc_read_u16(smc, BATTERY_VOLTAGE_KEY, &value);
++		scale = 1000;
++		break;
++	case POWER_SUPPLY_PROP_CHARGE_FULL_DESIGN:
++		ret = applesmc_read_le16(smc, BATTERY_DESIGN_KEY, &value);
++		scale = 1000;
++		break;
++	case POWER_SUPPLY_PROP_CHARGE_FULL:
++		ret = applesmc_read_u16(smc, BATTERY_FULL_KEY, &value);
++		scale = 1000;
++		break;
++	case POWER_SUPPLY_PROP_CHARGE_NOW:
++		ret = applesmc_read_u16(smc, BATTERY_REMAINING_KEY, &value);
++		scale = 1000;
++		break;
++	case POWER_SUPPLY_PROP_TIME_TO_EMPTY_NOW:
++		ret = applesmc_read_le16(smc, BATTERY_TO_EMPTY_KEY, &value);
++		if (!ret && value == BATTERY_TIME_UNKNOWN)
++			return -ENODATA;
++		scale = 60;
++		break;
++	case POWER_SUPPLY_PROP_TIME_TO_FULL_NOW:
++		ret = applesmc_read_u16(smc, BATTERY_TO_FULL_KEY, &value);
++		if (!ret && value == BATTERY_TIME_UNKNOWN)
++			return -ENODATA;
++		scale = 60;
++		break;
++	default:
++		return -EINVAL;
++	}
++
++	if (ret)
++		return ret;
++	val->intval = value * scale;
++	return 0;
++}
++
++static int applesmc_battery_get_property(struct power_supply *psy,
++	enum power_supply_property psp, union power_supply_propval *val)
++{
++	return applesmc_battery_read(power_supply_get_drvdata(psy), psp, val);
++}
++
++static const struct power_supply_desc applesmc_battery_desc = {
++	.name = "BAT0",
++	.type = POWER_SUPPLY_TYPE_BATTERY,
++	.properties = applesmc_battery_props,
++	.num_properties = ARRAY_SIZE(applesmc_battery_props),
++	.get_property = applesmc_battery_get_property,
++};
++
++/* Never fails: fans and sensors must keep working without the battery */
++static void applesmc_create_battery(struct applesmc_device *smc)
++{
++	struct power_supply_config cfg = { .drv_data = smc };
++	union power_supply_propval val;
++	bool has_battery;
++	int i, ret;
++
++	if (applesmc_has_key(smc, BATTERY_PRESENT_KEY, &has_battery) ||
++	    !has_battery)
++		return;
++
++	for (i = 0; i < ARRAY_SIZE(applesmc_battery_props); i++) {
++		ret = applesmc_battery_read(smc, applesmc_battery_props[i], &val);
++		if (ret && ret != -ENODATA) {
++			dev_warn(smc->ldev, "no battery, property %d: %d\n",
++				 applesmc_battery_props[i], ret);
++			return;
++		}
++	}
++
++	smc->battery = power_supply_register(&smc->dev->dev,
++					     &applesmc_battery_desc, &cfg);
++	if (IS_ERR(smc->battery)) {
++		dev_warn(smc->ldev, "no battery, register: %ld\n",
++			 PTR_ERR(smc->battery));
++		smc->battery = NULL;
++	}
++}
++
++static void applesmc_release_battery(struct applesmc_device *smc)
++{
++	if (smc->battery)
++		power_supply_unregister(smc->battery);
++}
++
+ static int applesmc_create_modules(struct applesmc_device *smc)
+ {
+ 	int ret;
+@@ -1849,6 +2083,8 @@
+ 		goto out_light_ledclass;
+ 	}
+ 
++	applesmc_create_battery(smc);
++
+ 	return 0;
+ 
+ out_light_ledclass:
+@@ -1871,6 +2107,7 @@
+ 
+ static void applesmc_destroy_modules(struct applesmc_device *smc)
+ {
++	applesmc_release_battery(smc);
+ 	hwmon_device_unregister(smc->hwmon_dev);
+ 	applesmc_release_key_backlight(smc);
+ 	applesmc_release_light_sensor(smc);
