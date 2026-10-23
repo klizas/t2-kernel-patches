@@ -97,3 +97,7 @@ From KAIT2EN (André Eikmeyer, `patches/upstream/prepared/acpi-sbs-battery-state
 ## `0001-macsmc-acpi-shutdown-cause.patch`
 
 7.3+. Logs `MSSD` (previous shutdown cause) and raw `MSPP`/`MSPR`/`EFBS`/`MSPU` at probe in `macsmc-acpi`. Was `0002-applesmc-t2-shutdown-cause.patch` until CachyOS 7.3 replaced `applesmc-t2` with the macsmc MFD stack. From KAIT2EN (André Eikmeyer, `modules/t2smc`).
+
+## `0001-macsmc-power-design-capacity.patch`
+
+7.3+. `macsmc-power` lists no `charge_full_design`/`energy_full_design` on T2 (ACPI), so upower reports `energy-full-design` 0 Wh and nothing can show battery health. Patch lists both when `B0DC` exists. `B0DC` is little-endian on T2 (like `B0TE`, unlike `B0FC`), 8700 mAh on MacBookPro16,1, the value `sbs` reported on 7.2. `energy_full_design` uses `B0AV` like `energy_full`, so both pairs give the same ratio. Replaces the battery half of `0001-applesmc-t2-smc-battery.patch` (7.2).
