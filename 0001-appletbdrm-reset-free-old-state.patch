@@ -1,0 +1,67 @@
+From: klizas <lukas@klizas.lt>
+Subject: [PATCH] drm/appletbdrm: free the old plane state in reset
+
+CachyOS 7.3 (commit f385b35ffaa7) resumes the driver with
+drm_mode_config_helper_resume(). drm_atomic_helper_resume() then calls
+drm_mode_config_reset() while the primary plane still holds the state
+that drm_mode_config_helper_suspend() committed.
+appletbdrm_primary_plane_reset() assumes that plane->state is NULL, so
+every resume warns and the old state leaks:
+
+  WARNING: drivers/gpu/drm/tiny/appletbdrm.c:516 at appletbdrm_primary_plane_reset+0x45/0x50 [appletbdrm]
+   drm_mode_config_reset+0xf5/0x320
+   drm_atomic_helper_resume+0x72/0x180
+   drm_mode_config_helper_resume+0x28/0x80
+   usb_resume_both+0x23e/0x320
+
+Destroy the existing state before allocating a new one, as
+drm_gem_reset_shadow_plane() does. Move the function below
+appletbdrm_primary_plane_destroy_state() so that it can call it.
+
+Fixes: f385b35ffaa7 ("The driver has no USB power management callbacks, so the USB core")
+
+--- a/drivers/gpu/drm/tiny/appletbdrm.c
++++ b/drivers/gpu/drm/tiny/appletbdrm.c
+@@ -509,19 +509,6 @@
+ 	drm_dev_exit(idx);
+ }
+ 
+-static void appletbdrm_primary_plane_reset(struct drm_plane *plane)
+-{
+-	struct appletbdrm_plane_state *appletbdrm_state;
+-
+-	WARN_ON(plane->state);
+-
+-	appletbdrm_state = kzalloc_obj(*appletbdrm_state);
+-	if (!appletbdrm_state)
+-		return;
+-
+-	__drm_gem_reset_shadow_plane(plane, &appletbdrm_state->base);
+-}
+-
+ static struct drm_plane_state *appletbdrm_primary_plane_duplicate_state(struct drm_plane *plane)
+ {
+ 	struct drm_shadow_plane_state *new_shadow_plane_state;
+@@ -561,6 +548,22 @@
+ 	kfree(appletbdrm_state);
+ }
+ 
++static void appletbdrm_primary_plane_reset(struct drm_plane *plane)
++{
++	struct appletbdrm_plane_state *appletbdrm_state;
++
++	if (plane->state) {
++		appletbdrm_primary_plane_destroy_state(plane, plane->state);
++		plane->state = NULL;
++	}
++
++	appletbdrm_state = kzalloc_obj(*appletbdrm_state);
++	if (!appletbdrm_state)
++		return;
++
++	__drm_gem_reset_shadow_plane(plane, &appletbdrm_state->base);
++}
++
+ static const struct drm_plane_helper_funcs appletbdrm_primary_plane_helper_funcs = {
+ 	.begin_fb_access = appletbdrm_primary_plane_helper_begin_fb_access,
+ 	.end_fb_access = drm_gem_end_shadow_fb_access,

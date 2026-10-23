@@ -51,6 +51,10 @@ A framebuffer request sized an exact multiple of the bulk OUT `wMaxPacketSize` (
 
 Applies on top of `0001-appletbdrm-zlp-pad.patch`. `begin_fb_access()` allocates the whole request with `kvzalloc()`. A full-frame request is several hundred KiB, so under fragmentation it lands in vmalloc, `usb_hcd_map_urb_for_dma()` → `dma_map_single()` refuses it (`apple-bce 0000:04:00.1: rejecting DMA map of vmalloc memory`, `WARNING: dma-mapping.h:524`, from `drm_mode_setcrtc` in `touchbar-rs`), and the frame is dropped. Seen once in 3 days. Patch uses `kzalloc()`/`kfree()`: GFP_KERNEL compacts before giving up, and a failure returns `-ENOMEM` from the commit instead.
 
+## `0001-appletbdrm-reset-free-old-state.patch`
+
+7.3+. Applies on top of `0001-appletbdrm-kzalloc-request.patch`. CachyOS 7.3 (`f385b35ffaa7`) gave the driver `suspend`/`resume`/`reset_resume` via `drm_mode_config_helper_suspend()`/`_resume()`. `drm_atomic_helper_resume()` calls `drm_mode_config_reset()` while the plane still holds the suspend state, and `appletbdrm_primary_plane_reset()` assumed `plane->state == NULL`: `WARNING: appletbdrm.c:516 at appletbdrm_primary_plane_reset` on every resume, old `appletbdrm_plane_state` leaked. Patch destroys the old state first, like `drm_gem_reset_shadow_plane()`.
+
 ## `0001-amdgpu-navi14-athub-pg.patch`
 
 Navi 14 is the only navi1x without `AMD_PG_SUPPORT_ATHUB` in `nv_common_early_init()` (`nv.c`); Navi 10 and Navi 12 both set it. The flag gates `FEATURE_ATHUB_PG_BIT` in `navi10_init_allowed_features()` (`navi10_ppt.c`), so PMFW never power-gates ATHUB on Navi 14. Patch adds the flag to the Navi 14 `pg_flags`.
