@@ -101,3 +101,7 @@ From KAIT2EN (André Eikmeyer, `patches/upstream/prepared/acpi-sbs-battery-state
 ## `0001-macsmc-power-design-capacity.patch`
 
 7.3+. `macsmc-power` lists no `charge_full_design`/`energy_full_design` on T2 (ACPI), so upower reports `energy-full-design` 0 Wh and nothing can show battery health. Patch lists both when `B0DC` exists. `B0DC` is little-endian on T2 (like `B0TE`, unlike `B0FC`), 8700 mAh on MacBookPro16,1, the value `sbs` reported on 7.2. `energy_full_design` uses `B0AV` like `energy_full`, so both pairs give the same ratio. Replaces the battery half of `0001-applesmc-t2-smc-battery.patch` (7.2).
+
+## `0002-macsmc-power-t2-bclm.patch`
+
+7.3+. Applies on top of `0001-macsmc-power-design-capacity.patch`. T2 firmware enforces both `CHLS` and `BCLM`: `CHLS` against `BUIC` (UI charge, what macOS shows), `BCLM` against `BRSC` (gauge relative charge, what `capacity` reports). `BUIC` runs ~4 ahead at 80 (`BRSC` 76 = `BUIC` 80). The driver wrote `CHLS`, so `charge_control_end_threshold` 80 stopped at `capacity` 76, and nothing could change the `BCLM` left by `applesmc-t2`, which caps every charge. Patch uses `BCLM` on ACPI when it exists. `CHLS` keeps its last value: set it to 100 once before switching (`charge_control_end_threshold` on an unpatched 7.3), or it stays a second, lower limit.

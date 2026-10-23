@@ -1,0 +1,38 @@
+From: klizas <lukas@klizas.lt>
+Subject: [PATCH] power: supply: macsmc: use BCLM for the charge limit on T2
+
+T2 firmware has CHLS and BCLM and enforces both, against different
+figures: CHLS against BUIC, the UI charge macOS shows, and BCLM against
+BRSC, the gauge's relative charge that CAPACITY reports on ACPI. BUIC
+runs ahead of BRSC. MacBookPro16,1, charging on AC:
+
+  BRSC  76  77  78  79  80
+  BUIC  80  81  82  83  84
+
+The driver prefers CHLS when it exists, so an end threshold of 80 stops
+charging at a CAPACITY of 76. With CHLS at 100 and BCLM at 80, charging
+ran on and stopped at BRSC 80 (BUIC 84), as applesmc-t2 did with BCLM.
+Nothing on 7.3 writes BCLM either, so a BCLM left by applesmc-t2 caps
+every charge, including one asked to go to 100.
+
+On ACPI, use BCLM when it exists. CHLS keeps its last value: set it to
+100 once before switching, or it stays a second, lower limit.
+
+Applies on top of 0001-macsmc-power-design-capacity.patch.
+
+--- a/drivers/power/supply/macsmc-power.c
++++ b/drivers/power/supply/macsmc-power.c
+@@ -1113,7 +1113,12 @@
+ 			props[nprops++] = POWER_SUPPLY_PROP_ENERGY_FULL;
+ 			props[nprops++] = POWER_SUPPLY_PROP_ENERGY_NOW;
+ 
+-			if (apple_smc_key_exists(smc, SMC_KEY(CHLS)))
++			/*
++			 * T2 applies CHLS to BUIC (the UI charge) but BCLM to
++			 * BRSC, which CAPACITY reports.
++			 */
++			if (apple_smc_key_exists(smc, SMC_KEY(CHLS)) &&
++			    !apple_smc_key_exists(smc, SMC_KEY(BCLM)))
+ 				power->has_chls = true;
+ 			if (power->has_chls || apple_smc_key_exists(smc, SMC_KEY(BCLM)))
+ 				props[nprops++] = POWER_SUPPLY_PROP_CHARGE_CONTROL_END_THRESHOLD;
