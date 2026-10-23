@@ -93,3 +93,7 @@ From KAIT2EN (André Eikmeyer, `patches/upstream/prepared/acpi-sbs-battery-state
 ## `0003-acpi-sbs-relative-state-of-charge.patch`
 
 From KAIT2EN (André Eikmeyer, `patches/upstream/prepared/acpi-sbs-battery-state-v1/0002`).
+
+## `0001-macsmc-acpi-shutdown-cause.patch`
+
+7.3+. Logs `MSSD` (previous shutdown cause) and raw `MSPP`/`MSPR`/`EFBS`/`MSPU` at probe in `macsmc-acpi`. Was `0002-applesmc-t2-shutdown-cause.patch` until CachyOS 7.3 replaced `applesmc-t2` with the macsmc MFD stack. From KAIT2EN (André Eikmeyer, `modules/t2smc`).

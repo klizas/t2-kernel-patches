@@ -1,0 +1,171 @@
+From: klizas <lukas@klizas.lt>
+Subject: [PATCH] platform/x86: macsmc-acpi: log the previous shutdown cause
+
+The SMC records why it last shut the x86 side down in MSSD (si8). The
+next shutdown overwrites it, so a power-off can only be explained if
+something reads MSSD on the boot after it. macOS logs it at boot as
+"Previous shutdown cause".
+
+Log MSSD at probe, named from KAIT2EN's cause table (Apple names from
+PowerManagement, the rest from community lists). Mirror the writes of
+AppleSMC::smcPublishShutdownCause: -64 (kernel panic) counts only while
+MSSW is 1, and MSSW is cleared after reporting it. Without MSSW, the
+one-shot -62 is reset to 6.
+
+MSSD stays unchanged when the T2 panics and takes the x86 side down, so
+also log MSPP, MSPR, EFBS and MSPU raw, to compare against a clean boot.
+
+MacBookPro16,1 after a clean reboot (applesmc-t2, 7.2):
+
+  previous shutdown cause: 5 (Software initiated shutdown, Apple)
+  previous x86 state: MSPP=00 MSPR=00 EFBS=0e MSPU=00 02 00 04 06 07
+
+Ported from t2smc_log_shutdown_cause() and t2smc_log_x86_state() in
+KAIT2EN modules/t2smc (André Eikmeyer). Moved from applesmc-t2 to
+macsmc-acpi for CachyOS 7.3, which replaced applesmc-t2 with the macsmc
+MFD stack.
+
+--- a/drivers/platform/x86/macsmc-acpi.c
++++ b/drivers/platform/x86/macsmc-acpi.c
+@@ -38,6 +38,11 @@
+ 
+ #define SMC_TIMEOUT_MS			1000
+ 
++/* Causes that AppleSMC::smcPublishShutdownCause treats specially */
++#define SHUTDOWN_CAUSE_FLAGGED	-64 /* only valid while MSSW is 1 */
++#define SHUTDOWN_CAUSE_ONE_SHOT	-62 /* reset to 6 once reported */
++#define SHUTDOWN_CAUSE_RESET	6
++
+ struct apple_smc_acpi {
+ 	struct device *dev;
+ 
+@@ -569,11 +574,114 @@ static const struct apple_smc_backend_ops apple_smc_acpi_be_ops = {
+ 	.disable_notifications = apple_smc_acpi_notifications,
+ };
+ 
++/*
++ * Apple names come from PowerManagement common/CommonLib.c, the others from
++ * community lists. Table from KAIT2EN t2smc.
++ */
++static const struct {
++	s8 cause;
++	bool apple;
++	const char *desc;
++} apple_smc_acpi_shutdown_causes[] = {
++	{    0, true,  "Battery disconnected" },
++	{    1, true,  "Normal warm reset" },
++	{    2, true,  "Power supply disconnected" },
++	{    3, true,  "Power button pressed for > 4 sec" },
++	{    5, true,  "Software initiated shutdown" },
++	{    7, true,  "Normal shutdown by SOC" },
++	{   -3, false, "Multiple temperature sensors too high" },
++	{  -14, false, "Electricity spike or surge" },
++	{  -20, false, "BridgeOS (T2) initiated shutdown" },
++	{  -60, true,  "Battery fully drained" },
++	{  -61, false, "Watchdog detected unresponsive app, shutting down" },
++	{  -62, false, "Watchdog detected unresponsive app, restarting" },
++	{  -64, false, "Kernel panic" },
++	{  -71, false, "Memory temperature too high" },
++	{  -74, false, "Battery temperature too high" },
++	{  -75, false, "Power adapter communication problem" },
++	{  -78, false, "Incorrect input current from power adapter" },
++	{  -79, false, "Incorrect current from battery" },
++	{  -81, true,  "Thermal shutdown for overtemp" },
++	{  -86, false, "Proximity temperature too high" },
++	{ -100, false, "Power supply temperature too high" },
++	{ -101, false, "Display temperature too high" },
++	{ -102, false, "Overvoltage" },
++	{ -103, false, "Battery voltage too low" },
++	{ -104, false, "Unknown battery fault" },
++	{ -127, false, "PMU/SMC forced shutdown for another cause" },
++};
++
++/* The writes mirror macOS, so that a one-shot cause is reported only once */
++static void apple_smc_acpi_log_shutdown_cause(struct apple_smc *smc)
++{
++	bool has_flag;
++	u8 flag = 0;
++	s8 cause;
++	int i;
++
++	if (!apple_smc_key_exists(smc, SMC_KEY(MSSD)))
++		return;
++	has_flag = apple_smc_key_exists(smc, SMC_KEY(MSSW));
++	if (has_flag && apple_smc_read_u8(smc, SMC_KEY(MSSW), &flag))
++		flag = 0;
++
++	if (apple_smc_read_s8(smc, SMC_KEY(MSSD), &cause)) {
++		dev_warn(smc->dev, "failed to read the previous shutdown cause\n");
++		return;
++	}
++
++	if (has_flag && cause == SHUTDOWN_CAUSE_FLAGGED) {
++		if (flag != 1)
++			cause = SHUTDOWN_CAUSE_RESET;
++		else if (apple_smc_write_u8(smc, SMC_KEY(MSSW), 0) < 0)
++			dev_warn(smc->dev, "failed to clear MSSW\n");
++	} else if (!has_flag && cause == SHUTDOWN_CAUSE_ONE_SHOT) {
++		if (apple_smc_write_s8(smc, SMC_KEY(MSSD), SHUTDOWN_CAUSE_RESET) < 0)
++			dev_warn(smc->dev, "failed to reset MSSD\n");
++	}
++
++	for (i = 0; i < ARRAY_SIZE(apple_smc_acpi_shutdown_causes); i++)
++		if (apple_smc_acpi_shutdown_causes[i].cause == cause)
++			break;
++	if (i == ARRAY_SIZE(apple_smc_acpi_shutdown_causes))
++		dev_info(smc->dev, "previous shutdown cause: %d (unknown)\n",
++			 cause);
++	else
++		dev_info(smc->dev, "previous shutdown cause: %d (%s, %s)\n",
++			 cause, apple_smc_acpi_shutdown_causes[i].desc,
++			 apple_smc_acpi_shutdown_causes[i].apple ? "Apple" : "community");
++}
++
++/* MSSD stays unchanged when the T2 panics, so log these to compare boots */
++static void apple_smc_acpi_log_x86_state(struct apple_smc *smc)
++{
++	static const smc_key keys[] = {
++		SMC_KEY(MSPP), SMC_KEY(MSPR), SMC_KEY(EFBS), SMC_KEY(MSPU),
++	};
++	struct apple_smc_key_info info;
++	char line[128];
++	size_t pos = 0;
++	u8 buf[8];
++	int i;
++
++	for (i = 0; i < ARRAY_SIZE(keys); i++) {
++		if (apple_smc_get_key_info(smc, keys[i], &info) ||
++		    !info.size || info.size > sizeof(buf) ||
++		    apple_smc_read(smc, keys[i], buf, info.size) < 0)
++			continue;
++		pos += scnprintf(line + pos, sizeof(line) - pos, " %p4ch=%*ph",
++				 &keys[i], info.size, buf);
++	}
++	if (pos)
++		dev_info(smc->dev, "previous x86 state:%s\n", line);
++}
++
+ static int apple_smc_acpi_probe(struct platform_device *pdev)
+ {
+ 	struct acpi_device *adev = ACPI_COMPANION(&pdev->dev);
+ 	struct apple_smc_acpi *smc;
+ 	acpi_status status;
++	int ret;
+ 
+ 	smc = devm_kzalloc(&pdev->dev, sizeof(*smc), GFP_KERNEL);
+ 	if (!smc)
+@@ -595,7 +703,13 @@ static int apple_smc_acpi_probe(struct platform_device *pdev)
+ 	INIT_KFIFO(smc->event_fifo);
+ 	apple_smc_acpi_try_enable_interrupts(smc);
+ 
+-	return apple_smc_probe(smc->dev, &apple_smc_acpi_be_ops, smc, &smc->event_handlers, true);
++	ret = apple_smc_probe(smc->dev, &apple_smc_acpi_be_ops, smc, &smc->event_handlers, true);
++	if (ret)
++		return ret;
++
++	apple_smc_acpi_log_shutdown_cause(dev_get_drvdata(smc->dev));
++	apple_smc_acpi_log_x86_state(dev_get_drvdata(smc->dev));
++	return 0;
+ }
+ 
+ static int apple_smc_acpi_resume(struct device *dev)
