@@ -12,7 +12,7 @@ Patch drops the deferral; the thaw path takes the same inline `cache_cpu_init()`
 
 Suspend hangs when Broadcom firmware stops responding before the PCI driver finishes suspending.
 
-- `brcmf_pcie_pm_enter_D3` times out waiting 2s for a D3_INFORM ACK and aborts suspend with `-EIO`. Patch lets suspend proceed and sets `devinfo->d3_ack_timeout`.
+- `brcmf_pcie_pm_enter_D3` times out waiting 2s for a D3_INFORM ACK. Since 7.3 upstream continues suspend when WoWLAN is off (aborts with `-EIO` when on). Patch sets `devinfo->d3_ack_timeout` in that path.
 - `brcmf_pcie_pm_leave_D3` checks the flag on resume and forces the existing remove + re-probe path (firmware reload). INTMASK alone can't detect the hang: firmware that timed out on D3_INFORM can still return nonzero INTMASK, hot-resuming into a zombie (associated, DHCP up, data path dead). Toggling networking in that state can wedge the chip's PCIe interface → whole-machine hard lock.
 - `brcmf_msgbuf_delete_flowring` waits for `outstanding_tx` to drain before checking bus state, burning 5–10ms × 10 retries per flowring. Patch checks bus state before and during the wait.
 

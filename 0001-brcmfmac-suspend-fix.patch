@@ -1,6 +1,6 @@
 From: Lukas Klizas <lukas@klizas.lt>
 Date: Sun, 5 Jul 2026 14:50:00 +0300
-Subject: [PATCH v2] brcmfmac: fix suspend failures caused by unresponsive firmware
+Subject: [PATCH v3] brcmfmac: fix suspend failures caused by unresponsive firmware
 
 During suspend, two firmware-dependent paths can stall or fail:
 
@@ -23,6 +23,10 @@ worse, toggling networking in that state can wedge the chip's PCIe
 interface and hard-lock the machine). Carry the D3 timeout across the
 sleep cycle via devinfo->d3_ack_timeout and force the existing
 remove + re-probe path on resume, reloading the firmware.
+
+v3: Rebased onto 7.3, where brcmf_pcie_pm_enter_D3() already continues
+suspend on a missing D3 ACK when WoWLAN is off (and still aborts with
+-EIO when it is on). Only set devinfo->d3_ack_timeout in that path.
 
 Signed-off-by: Lukas Klizas <lukas@klizas.lt>
 ---
@@ -82,17 +86,12 @@ diff -ru a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/pcie.c b/drivers/net
  	bool irq_allocated;
  	bool wowl_enabled;
  	u8 dma_idx_sz;
-@@ -2643,8 +2644,13 @@
- 			   BRCMF_PCIE_MBDATA_TIMEOUT);
- 	if (!devinfo->mbdata_completed) {
- 		brcmf_err(bus, "Timeout on response for entering D3 substate\n");
--		brcmf_bus_change_state(bus, BRCMF_BUS_UP);
--		return -EIO;
-+		/* Proceed with suspend anyway. Remember that firmware is
-+		 * unresponsive so resume skips the hot-resume path and does
-+		 * a full remove + re-probe. Aborting suspend here just strands
-+		 * the user with a hung firmware and a machine that won't
-+		 * sleep.
+@@ -2659,6 +2660,10 @@
+ 		}
+ 
+ 		brcmf_dbg(PCIE, "No D3 ACK, continuing to power the device off\n");
++		/* Remember that firmware is unresponsive so resume skips the
++		 * hot-resume path and does a full remove + re-probe.
 +		 */
 +		devinfo->d3_ack_timeout = true;
  	}
