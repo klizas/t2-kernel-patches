@@ -64,10 +64,10 @@ Signed-off-by: Andre Eikmeyer <dev@deq.rocks>
  		ret = smu_v11_0_set_hard_freq_limited_range(smu, SMU_UCLK, 0, max_freq);
  		if (ret)
  			return ret;
-@@ -3325,7 +3360,7 @@
+@@ -3333,7 +3368,7 @@
  	.disable_all_features_with_exception = smu_cmn_disable_all_features_with_exception,
  	.notify_display_change = smu_v11_0_notify_display_change,
- 	.set_power_limit = smu_v11_0_set_power_limit,
+ 	.set_ppt_limit = smu_v11_0_set_ppt_limit,
 -	.init_max_sustainable_clocks = smu_v11_0_init_max_sustainable_clocks,
 +	.init_max_sustainable_clocks = navi10_init_max_sustainable_clocks,
  	.enable_thermal_alert = smu_v11_0_enable_thermal_alert,

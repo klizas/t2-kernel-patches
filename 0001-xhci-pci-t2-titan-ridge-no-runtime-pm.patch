@@ -28,7 +28,7 @@ index b0377701a..d46be9e0d 100644
 +#include <linux/dmi.h>
  #include <linux/reset.h>
  #include <linux/suspend.h>
- 
+ #include <linux/bitfield.h>
 @@ -512,6 +513,13 @@ static void xhci_pci_quirks(struct device *dev, struct xhci_hcd *xhci)
  	if (xhci->hci_version >= 0x120)
  		xhci->quirks |= XHCI_DEFAULT_PM_RUNTIME_ALLOW;

@@ -67,7 +67,7 @@ Signed-off-by: Lukas Klizas <lukas@klizas.lt>
 
  	ret = hid_hw_open(hdev);
  	if (ret) {
-@@ -415,17 +433,12 @@ static int appletb_kbd_probe(struct hid_device *hdev, const struct hid_device_id
+@@ -461,17 +479,12 @@ static int appletb_kbd_probe(struct hid_device *hdev, const struct hid_device_id
  		goto stop_hw;
  	}
 
@@ -79,14 +79,14 @@ Signed-off-by: Lukas Klizas <lukas@klizas.lt>
 -		INIT_DELAYED_WORK(&kbd->inactivity_work, appletb_inactivity_work);
 -		INIT_WORK(&kbd->restore_brightness_work,
 -			  appletb_restore_brightness_work);
--		mod_delayed_work(system_wq, &kbd->inactivity_work,
+-		mod_delayed_work(system_dfl_wq, &kbd->inactivity_work,
 -				 secs_to_jiffies(appletb_tb_dim_timeout));
 -	}
 +	backlight_device_set_brightness(kbd->backlight_dev, 2);
 +	INIT_DELAYED_WORK(&kbd->inactivity_work, appletb_inactivity_work);
 +	INIT_WORK(&kbd->restore_brightness_work,
 +		  appletb_restore_brightness_work);
-+	mod_delayed_work(system_wq, &kbd->inactivity_work,
++	mod_delayed_work(system_dfl_wq, &kbd->inactivity_work,
 +			 secs_to_jiffies(appletb_tb_dim_timeout));
 
  	kbd->inp_handler.event = appletb_kbd_inp_event;
