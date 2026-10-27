@@ -105,3 +105,7 @@ From KAIT2EN (André Eikmeyer, `patches/upstream/prepared/acpi-sbs-battery-state
 ## `0002-macsmc-power-t2-bclm.patch`
 
 7.3+. Applies on top of `0001-macsmc-power-design-capacity.patch`. T2 firmware enforces both `CHLS` and `BCLM`: `CHLS` against `BUIC` (UI charge, what macOS shows), `BCLM` against `BRSC` (gauge relative charge, what `capacity` reports). `BUIC` runs ~4 ahead at 80 (`BRSC` 76 = `BUIC` 80). The driver wrote `CHLS`, so `charge_control_end_threshold` 80 stopped at `capacity` 76, and nothing could change the `BCLM` left by `applesmc-t2`, which caps every charge. Patch uses `BCLM` on ACPI when it exists. `CHLS` keeps its last value: set it to 100 once before switching (`charge_control_end_threshold` on an unpatched 7.3), or it stays a second, lower limit.
+
+## `0003-macsmc-power-resume-ac-state.patch`
+
+7.3+. Applies on top of `0002-macsmc-power-t2-bclm.patch`. Unplugging the charger while asleep leaves `macsmc-ac` reporting online after wake, and the battery reads `Not charging` while it discharges. Stays wrong until the next AC change.

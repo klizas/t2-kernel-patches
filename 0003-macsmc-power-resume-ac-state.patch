@@ -1,0 +1,64 @@
+From: klizas <lukas@klizas.lt>
+Subject: [PATCH] power: supply: macsmc: re-read the AC state on resume
+
+On ACPI the driver caches the adapter state in adapter_status. It reads
+ADP1 _PSR at probe and on each ADP1 Notify(0x80), and nowhere else. A
+charger unplugged while the system is in S3 raises no notify after
+wake, so macsmc-ac stays online. The battery status comes from the same
+flag and reads Not charging. MacBookPro16,1, unplugged in S3, after
+wake:
+
+  macsmc-ac       online 1, current_now 0, power_now 0
+  macsmc-battery  status Not charging, current_now -3081000
+
+Reloading the driver re-reads _PSR in probe and reports online 0, so
+the firmware has the right state and only the cached copy is stale.
+
+drivers/acpi/ac.c re-reads _PSR in acpi_ac_resume() for this case.
+acpi_quirk_skip_acpi_ac_and_battery() keeps ac.c off x86 Apple machines
+when CONFIG_MACSMC_POWER is set, and this driver took over ADP1 without
+the resume half. Add the same resume callback: re-read _PSR and call
+power_supply_changed() on both supplies when the state changed.
+
+Applies on top of 0002-macsmc-power-t2-bclm.patch.
+
+--- a/drivers/power/supply/macsmc-power.c
++++ b/drivers/power/supply/macsmc-power.c
+@@ -1350,6 +1350,29 @@
+ 				macsmc_power_acpi_notify);
+ }
+ 
++static int macsmc_power_resume(struct device *dev)
++{
++	struct macsmc_power *power = dev_get_drvdata(dev);
++	unsigned long long psr;
++
++	/* An AC change in S3 raises no ADP1 notify after wake */
++	if (!power->adapter ||
++	    ACPI_FAILURE(acpi_evaluate_integer(power->adapter->handle, "_PSR", NULL, &psr)))
++		return 0;
++
++	if (power->adapter_status != !!psr) {
++		power->adapter_status = !!psr;
++		if (power->batt)
++			power_supply_changed(power->batt);
++		if (power->ac)
++			power_supply_changed(power->ac);
++	}
++
++	return 0;
++}
++
++static DEFINE_SIMPLE_DEV_PM_OPS(macsmc_power_pm_ops, NULL, macsmc_power_resume);
++
+ static const struct platform_device_id macsmc_power_id[] = {
+ 	{ .name = "macsmc-power" },
+ 	{ /* sentinel */ }
+@@ -1359,6 +1382,7 @@
+ static struct platform_driver macsmc_power_driver = {
+ 	.driver = {
+ 		.name = "macsmc-power",
++		.pm = pm_sleep_ptr(&macsmc_power_pm_ops),
+ 	},
+ 	.id_table = macsmc_power_id,
+ 	.probe = macsmc_power_probe,
